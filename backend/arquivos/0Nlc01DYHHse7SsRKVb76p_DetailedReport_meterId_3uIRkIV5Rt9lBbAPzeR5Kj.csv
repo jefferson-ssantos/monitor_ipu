@@ -1,0 +1,8 @@
+Org ID,Execution type,Executed asset,Date (in UTC),Invoked by,Execution env,status,Execution count,Total Execution time (in hours),Average Execution time (in seconds)
+0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_GRANULAR,2025-08-13,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,135,0.0067386111,0.17970
+0Nlc01DYHHse7SsRKVb76p,Process,p_Tibco_Cliente_Gestao,2025-08-13,Messaging Service,01CR7T08000000000002_VLI_Logistica_PRD,Completed,1,0.0002683333,0.96600
+0Nlc01DYHHse7SsRKVb76p,Process,p_CDGC_2_EXCEL_EXPORT_BUSINESS_TERM-1,2025-08-13,REST,01CR7T08000000000002_VLI_Logistica_PRD,Completed,2,0.1056402778,190.15250
+0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_GESTAO,2025-08-13,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,125,0.0043097222,0.12412
+0Nlc01DYHHse7SsRKVb76p,Process,p_Tibco_Cliente_Granular_Cli001,2025-08-13,Messaging Service,01CR7T08000000000002_VLI_Logistica_PRD,Completed,6,0.0008936111,0.53617
+0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_SEGMENTACAO,2025-08-13,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,125,0.0040705556,0.11723
+0Nlc01DYHHse7SsRKVb76p,Process,mp_Security_Logs_2_TB_CMDB,2025-08-13,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,1,0.0119230556,42.92300

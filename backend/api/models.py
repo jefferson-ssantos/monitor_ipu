@@ -34,17 +34,18 @@ class ConfiguracaoIDMC(models.Model):
         verbose_name_plural = "Configurações IDMC"
         ordering = ['cliente', 'apelido_configuracao']
 
-# --- MODELOS DE CONSUMO COMPLETOS ---
+# --- MODELOS DE CONSUMO ATUALIZADOS COM CHAVES CORRETAS ---
 
 class ConsumoSummary(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
-    data_extracao = models.DateField(auto_now_add=True)
+    data_extracao = models.DateTimeField()
+    data_atualizacao = models.DateTimeField(auto_now=True)
     org_id = models.TextField(null=True, blank=True)
     meter_id = models.CharField(max_length=255, null=True, blank=True)
     meter_name = models.CharField(max_length=255, null=True, blank=True)
-    consumption_date = models.DateField(null=True, blank=True)
-    billing_period_start_date = models.DateField(null=True, blank=True)
-    billing_period_end_date = models.DateField(null=True, blank=True)
+    consumption_date = models.DateTimeField(null=True, blank=True)
+    billing_period_start_date = models.DateTimeField(null=True, blank=True)
+    billing_period_end_date = models.DateTimeField(null=True, blank=True)
     meter_usage = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
     consumption_ipu = models.DecimalField(max_digits=24, decimal_places=12, null=True, blank=True)
     scalar = models.CharField(max_length=100, null=True, blank=True)
@@ -56,11 +57,13 @@ class ConsumoSummary(models.Model):
     class Meta:
         db_table = 'api_consumosummary'
         verbose_name_plural = "Consumos (Summary)"
+        unique_together = ('configuracao', 'org_id', 'meter_id', 'consumption_date')
 
 class ConsumoProjectFolder(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
-    data_extracao = models.DateField(auto_now_add=True)
-    consumption_date = models.DateField(null=True, blank=True)
+    data_extracao = models.DateTimeField()
+    data_atualizacao = models.DateTimeField(auto_now=True)
+    consumption_date = models.DateTimeField(null=True, blank=True)
     project_name = models.TextField(null=True, blank=True)
     folder_path = models.TextField(null=True, blank=True)
     org_id = models.TextField(null=True, blank=True)
@@ -70,13 +73,15 @@ class ConsumoProjectFolder(models.Model):
     class Meta:
         db_table = 'api_consumoprojectfolder'
         verbose_name_plural = "Consumos (Project/Folder)"
+        unique_together = ('configuracao', 'consumption_date', 'project_name', 'folder_path', 'org_id')
 
 class ConsumoAsset(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
-    data_extracao = models.DateField(auto_now_add=True)
+    data_extracao = models.DateTimeField()
+    data_atualizacao = models.DateTimeField(auto_now=True)
     meter_id = models.CharField(max_length=255, null=True, blank=True)
     meter_name = models.CharField(max_length=255, null=True, blank=True)
-    consumption_date = models.DateField(null=True, blank=True)
+    consumption_date = models.DateTimeField(null=True, blank=True)
     asset_name = models.TextField(null=True, blank=True)
     asset_type = models.CharField(max_length=255, null=True, blank=True)
     project_name = models.TextField(null=True, blank=True)
@@ -93,16 +98,18 @@ class ConsumoAsset(models.Model):
     class Meta:
         db_table = 'api_consumoasset'
         verbose_name_plural = "Consumos (Asset)"
+        unique_together = ('configuracao', 'meter_id', 'consumption_date', 'asset_name', 'asset_type', 'project_name', 'folder_name', 'org_id', 'runtime_environment')
 
 class ConsumoCdiJobExecucao(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
-    data_extracao = models.DateField(auto_now_add=True)
+    data_extracao = models.DateTimeField()
+    data_atualizacao = models.DateTimeField(auto_now=True)
     meter_id_ref = models.CharField(max_length=255, null=True, blank=True)
     task_id = models.TextField(null=True, blank=True)
     task_name = models.TextField(null=True, blank=True)
     task_object_name = models.TextField(null=True, blank=True)
     task_type = models.CharField(max_length=255, null=True, blank=True)
-    task_run_id = models.TextField(unique=True)
+    task_run_id = models.TextField()
     project_name = models.TextField(null=True, blank=True)
     folder_name = models.TextField(null=True, blank=True)
     org_id = models.TextField(null=True, blank=True)
@@ -119,14 +126,16 @@ class ConsumoCdiJobExecucao(models.Model):
     class Meta:
         db_table = 'api_consumocdijobexecucao'
         verbose_name_plural = "Consumos (CDI Job)"
+        unique_together = ('configuracao', 'task_id', 'task_run_id', 'org_id', 'environment_id')
 
 class ConsumoCaiAssetSumario(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
-    data_extracao = models.DateField(auto_now_add=True)
+    data_extracao = models.DateTimeField()
+    data_atualizacao = models.DateTimeField(auto_now=True)
     org_id = models.TextField(null=True, blank=True)
     execution_type = models.CharField(max_length=255, null=True, blank=True)
     executed_asset = models.TextField(null=True, blank=True)
-    execution_date = models.DateField(null=True, blank=True)
+    execution_date = models.DateTimeField(null=True, blank=True)
     invoked_by = models.TextField(null=True, blank=True)
     execution_env = models.TextField(null=True, blank=True)
     status = models.CharField(max_length=100, null=True, blank=True)
@@ -137,9 +146,8 @@ class ConsumoCaiAssetSumario(models.Model):
     class Meta:
         db_table = 'api_consumocaiassetsumario'
         verbose_name_plural = "Consumos (CAI Summary)"
-        unique_together = ('configuracao', 'executed_asset', 'execution_date', 'execution_type')
+        unique_together = ('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env')
 
-# --- NOVO MODELO PARA LOGS ---
 class ExtracaoLog(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE, related_name="logs")
     timestamp = models.DateTimeField(auto_now_add=True)
