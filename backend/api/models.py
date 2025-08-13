@@ -1,0 +1,158 @@
+# backend/api/models.py
+
+from django.db import models
+
+class Clientes(models.Model):
+    nome_cliente = models.CharField(max_length=255)
+    email_contato = models.EmailField(unique=True)
+    preco_por_ipu = models.DecimalField(max_digits=10, decimal_places=4)
+    ativo = models.BooleanField(default=True)
+    data_criacao = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.nome_cliente
+
+    class Meta:
+        db_table = 'api_clientes'
+        verbose_name_plural = "Clientes"
+
+class ConfiguracaoIDMC(models.Model):
+    cliente = models.ForeignKey(Clientes, on_delete=models.CASCADE, related_name="configuracoes")
+    apelido_configuracao = models.CharField(max_length=255)
+    iics_pod_url = models.TextField()
+    iics_username = models.TextField()
+    iics_password = models.TextField()
+    ultima_extracao_enddate = models.DateTimeField(null=True, blank=True, help_text="Marcador da última data final usada na extração")
+    ativo = models.BooleanField(default=True)
+    data_criacao = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.cliente.nome_cliente} - {self.apelido_configuracao}"
+
+    class Meta:
+        db_table = 'api_configuracaoidmc'
+        verbose_name_plural = "Configurações IDMC"
+        ordering = ['cliente', 'apelido_configuracao']
+
+# --- MODELOS DE CONSUMO COMPLETOS ---
+
+class ConsumoSummary(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
+    data_extracao = models.DateField(auto_now_add=True)
+    org_id = models.TextField(null=True, blank=True)
+    meter_id = models.CharField(max_length=255, null=True, blank=True)
+    meter_name = models.CharField(max_length=255, null=True, blank=True)
+    consumption_date = models.DateField(null=True, blank=True)
+    billing_period_start_date = models.DateField(null=True, blank=True)
+    billing_period_end_date = models.DateField(null=True, blank=True)
+    meter_usage = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    consumption_ipu = models.DecimalField(max_digits=24, decimal_places=12, null=True, blank=True)
+    scalar = models.CharField(max_length=100, null=True, blank=True)
+    metric_category = models.CharField(max_length=255, null=True, blank=True)
+    org_name = models.CharField(max_length=255, null=True, blank=True)
+    org_type = models.CharField(max_length=100, null=True, blank=True)
+    ipu_rate = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_consumosummary'
+        verbose_name_plural = "Consumos (Summary)"
+
+class ConsumoProjectFolder(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
+    data_extracao = models.DateField(auto_now_add=True)
+    consumption_date = models.DateField(null=True, blank=True)
+    project_name = models.TextField(null=True, blank=True)
+    folder_path = models.TextField(null=True, blank=True)
+    org_id = models.TextField(null=True, blank=True)
+    org_type = models.CharField(max_length=100, null=True, blank=True)
+    total_consumption_ipu = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_consumoprojectfolder'
+        verbose_name_plural = "Consumos (Project/Folder)"
+
+class ConsumoAsset(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
+    data_extracao = models.DateField(auto_now_add=True)
+    meter_id = models.CharField(max_length=255, null=True, blank=True)
+    meter_name = models.CharField(max_length=255, null=True, blank=True)
+    consumption_date = models.DateField(null=True, blank=True)
+    asset_name = models.TextField(null=True, blank=True)
+    asset_type = models.CharField(max_length=255, null=True, blank=True)
+    project_name = models.TextField(null=True, blank=True)
+    folder_name = models.TextField(null=True, blank=True)
+    org_id = models.TextField(null=True, blank=True)
+    org_type = models.CharField(max_length=100, null=True, blank=True)
+    runtime_environment = models.CharField(max_length=255, null=True, blank=True)
+    environment_type = models.CharField(max_length=100, null=True, blank=True)
+    tier = models.CharField(max_length=100, null=True, blank=True)
+    ipu_per_unit = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    usage = models.DecimalField(max_digits=24, decimal_places=10, null=True, blank=True)
+    consumption_ipu = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_consumoasset'
+        verbose_name_plural = "Consumos (Asset)"
+
+class ConsumoCdiJobExecucao(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
+    data_extracao = models.DateField(auto_now_add=True)
+    meter_id_ref = models.CharField(max_length=255, null=True, blank=True)
+    task_id = models.TextField(null=True, blank=True)
+    task_name = models.TextField(null=True, blank=True)
+    task_object_name = models.TextField(null=True, blank=True)
+    task_type = models.CharField(max_length=255, null=True, blank=True)
+    task_run_id = models.TextField(unique=True)
+    project_name = models.TextField(null=True, blank=True)
+    folder_name = models.TextField(null=True, blank=True)
+    org_id = models.TextField(null=True, blank=True)
+    environment_id = models.TextField(null=True, blank=True)
+    environment_name = models.TextField(null=True, blank=True)
+    cores_used = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=100, null=True, blank=True)
+    metered_value_ipu = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    audit_time = models.DateTimeField(null=True, blank=True)
+    obm_task_time_seconds = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_consumocdijobexecucao'
+        verbose_name_plural = "Consumos (CDI Job)"
+
+class ConsumoCaiAssetSumario(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
+    data_extracao = models.DateField(auto_now_add=True)
+    org_id = models.TextField(null=True, blank=True)
+    execution_type = models.CharField(max_length=255, null=True, blank=True)
+    executed_asset = models.TextField(null=True, blank=True)
+    execution_date = models.DateField(null=True, blank=True)
+    invoked_by = models.TextField(null=True, blank=True)
+    execution_env = models.TextField(null=True, blank=True)
+    status = models.CharField(max_length=100, null=True, blank=True)
+    execution_count = models.BigIntegerField(null=True, blank=True)
+    total_execution_time_hours = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    avg_execution_time_seconds = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+
+    class Meta:
+        db_table = 'api_consumocaiassetsumario'
+        verbose_name_plural = "Consumos (CAI Summary)"
+        unique_together = ('configuracao', 'executed_asset', 'execution_date', 'execution_type')
+
+# --- NOVO MODELO PARA LOGS ---
+class ExtracaoLog(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE, related_name="logs")
+    timestamp = models.DateTimeField(auto_now_add=True)
+    etapa = models.CharField(max_length=50, help_text="Ex: LOGIN, EXPORT_JOB, DOWNLOAD, LOAD_CSV")
+    status = models.CharField(max_length=10, choices=[('SUCCESS', 'Success'), ('FAILED', 'Failed')])
+    detalhes = models.TextField(null=True, blank=True, help_text="Detalhes como job_type, meter_id, etc.")
+    mensagem_erro = models.TextField(null=True, blank=True)
+    resposta_api = models.TextField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.timestamp.strftime('%Y-%m-%d %H:%M')} - {self.configuracao.apelido_configuracao} - {self.etapa} - {self.status}"
+
+    class Meta:
+        db_table = 'api_extracaolog'
+        verbose_name_plural = "Logs de Extração"
+        ordering = ['-timestamp']
