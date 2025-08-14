@@ -1,4 +1,4 @@
 Meter ID,Meter Name,Date,Asset Name,Asset Type,Project,Folder,Org ID,Org Type,Environment Name,Environment Type,Tier,IPU Per Unit,Usage,Consumption (IPUs)
-a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-08-14T00:00:00Z,mt_TB_CONSULTORES_FATURAVEIS,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,0.005278000000,0.000844480000
-a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-08-14T00:00:00Z,mt_CARGA_ARTIA,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,1.643889000000,0.263022240000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-08-14T00:00:00Z,mt_TB_CONSULTORES_FATURAVEIS,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,0.015280000000,0.002444800000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-08-14T00:00:00Z,mt_CARGA_ARTIA,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,3.347500000000,0.535600000000
 3sY0I8UHjyTiXcLzZI1fqj,Governance Records,2025-08-14T00:00:00Z,null,null,null,null,4xiVO2awWKCdQC52Ap0tYk,Production,environmentId,Cloud Hosted Service,0.000 - 40000.000,9.500000,2.000000000000,0.001900000000
