@@ -98,7 +98,7 @@ class ConsumoAsset(models.Model):
     class Meta:
         db_table = 'api_consumoasset'
         verbose_name_plural = "Consumos (Asset)"
-        unique_together = ('configuracao', 'meter_id', 'consumption_date', 'asset_name', 'asset_type', 'project_name', 'folder_name', 'org_id', 'runtime_environment')
+        unique_together = ('configuracao', 'meter_id', 'consumption_date', 'asset_name', 'asset_type', 'project_name', 'folder_name', 'org_id', 'runtime_environment', 'tier', 'ipu_per_unit')
 
 class ConsumoCdiJobExecucao(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
@@ -126,7 +126,8 @@ class ConsumoCdiJobExecucao(models.Model):
     class Meta:
         db_table = 'api_consumocdijobexecucao'
         verbose_name_plural = "Consumos (CDI Job)"
-        unique_together = ('configuracao', 'task_id', 'task_run_id', 'org_id', 'environment_id')
+        # CHAVE ÚNICA ATUALIZADA CONFORME SOLICITADO
+        unique_together = ('configuracao', 'task_id', 'task_run_id', 'org_id', 'environment_id', 'start_time', 'end_time')
 
 class ConsumoCaiAssetSumario(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)

@@ -4,14 +4,23 @@ import time
 import os
 import zipfile
 import csv
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from concurrent.futures import ThreadPoolExecutor
+
+# Import dateutil parser
+try:
+    from dateutil import parser as date_parser
+except ImportError:
+    # Provide a helpful error message if dateutil is not installed
+    raise ImportError("A biblioteca 'python-dateutil' é necessária. Por favor, adicione-a ao seu requirements.txt e reconstrua a imagem.")
 
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from django.db import transaction, connection
 from django.utils import timezone
+from django.utils.text import slugify
 
 # Importando os modelos Django que criamos, incluindo o de Log
 from api.models import (
@@ -128,41 +137,65 @@ class InformaticaAPIClient:
         self.command.stdout.write(self.command.style.SUCCESS(f"{self.log_prefix} Download concluído: {download_path}"))
         return download_path
 
-# --- Comando Django ---
-
 class Command(BaseCommand):
     help = 'Executa a rotina para buscar e popular dados de consumo de IPU da Informatica.'
 
+    def _clean_value(self, value):
+        if value is None or value.lower() == 'null' or value.strip() == '':
+            return None
+        return value
+
     def _safe_cast(self, value, cast_type, default=None):
-        if value is None or value == '': return default
-        try:
-            if cast_type == Decimal: return Decimal(value)
-            if cast_type == int: return int(float(value))
-            if cast_type == datetime:
-                dt_naive = None
-                for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d'):
-                    try:
-                        dt_naive = datetime.strptime(value, fmt)
-                        break
-                    except ValueError:
-                        pass
-                if dt_naive:
-                    return timezone.make_aware(dt_naive, timezone.get_default_timezone())
-                return default
-            return cast_type(value)
-        except (ValueError, TypeError, InvalidOperation):
+        cleaned_value = self._clean_value(value)
+        if cleaned_value is None:
             return default
+        
+        try:
+            if cast_type == Decimal:
+                return Decimal(cleaned_value)
+            if cast_type == int:
+                return int(float(cleaned_value))
+            if cast_type == datetime:
+                dt_obj = date_parser.parse(cleaned_value)
+                # Se a data for "naive", torna-a "aware" usando o fuso horário padrão do Django
+                if timezone.is_naive(dt_obj):
+                    dt_obj = timezone.make_aware(dt_obj, timezone.get_default_timezone())
+                # Padroniza para UTC para garantir consistência na comparação e armazenamento
+                return dt_obj.astimezone(timezone.utc)
+            return cast_type(cleaned_value)
+        except (ValueError, TypeError, InvalidOperation, date_parser.ParserError):
+            return default
+
+    def _get_config_specific_paths(self, config):
+        safe_client_name = slugify(config.cliente.nome_cliente)
+        safe_config_name = slugify(config.apelido_configuracao)
+        base_arquivos_dir = os.path.join(settings.BASE_DIR, 'arquivos', safe_client_name, safe_config_name)
+        base_downloads_dir = os.path.join(settings.BASE_DIR, 'downloads', safe_client_name, safe_config_name)
+        os.makedirs(base_arquivos_dir, exist_ok=True)
+        os.makedirs(base_downloads_dir, exist_ok=True)
+        return base_arquivos_dir, base_downloads_dir
+
+    def _cleanup_config_files(self, config):
+        self.stdout.write(f"Limpando arquivos antigos para a configuração '{config.apelido_configuracao}'...")
+        arquivos_dir, downloads_dir = self._get_config_specific_paths(config)
+        for directory, extension in [(arquivos_dir, '.csv'), (downloads_dir, '.zip')]:
+            if os.path.exists(directory):
+                for filename in os.listdir(directory):
+                    if filename.lower().endswith(extension):
+                        try:
+                            os.remove(os.path.join(directory, filename))
+                        except OSError as e:
+                            self.stderr.write(self.style.WARNING(f"Não foi possível remover o arquivo antigo {filename}: {e}"))
+        self.stdout.write(self.style.SUCCESS("Limpeza da configuração concluída."))
 
     def unzip_file(self, zip_path, extract_to_dir, export_suffix, file_prefix="", log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Descompactando {zip_path}...")
         try:
-            os.makedirs(extract_to_dir, exist_ok=True)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 try:
                     csv_filename_in_zip = next(name for name in zip_ref.namelist() if name.lower().endswith('.csv'))
                 except StopIteration:
                     self.stderr.write(f"{log_prefix}    - Nenhum arquivo CSV encontrado no zip.")
-                    os.remove(zip_path)
                     return None
                 original_csv_path = zip_ref.extract(csv_filename_in_zip, path=extract_to_dir)
             base_name = os.path.splitext(os.path.basename(original_csv_path))[0]
@@ -172,48 +205,46 @@ class Command(BaseCommand):
             if os.path.exists(final_csv_path):
                 os.remove(final_csv_path)
             os.rename(original_csv_path, final_csv_path)
-            os.remove(zip_path)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Arquivo descompactado e salvo como: {final_csv_path}"))
             return final_csv_path
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Ocorreu um erro ao descompactar: {e}")
-            if 'zip_path' in locals() and os.path.exists(zip_path):
-                os.remove(zip_path)
             return None
     
-    # --- MÉTODOS PARA POPULAR CADA TABELA ---
-
     @transaction.atomic
     def load_summary_csv(self, csv_path, config, execution_timestamp, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoSummary' com: {csv_path}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
-                for row in reader:
-                    org_id, meter_id, consumption_date = row.get('OrgId'), row.get('MeterId'), self._safe_cast(row.get('Date'), datetime)
-                    if not all([org_id, meter_id, consumption_date]): continue
-                    
-                    obj, created = ConsumoSummary.objects.get_or_create(
-                        configuracao=config, org_id=org_id, meter_id=meter_id, consumption_date=consumption_date,
-                        defaults={'data_extracao': execution_timestamp}
-                    )
-                    
-                    obj.meter_name = row.get('MeterName')
-                    obj.billing_period_start_date = self._safe_cast(row.get('BillingPeriodStartDate'), datetime)
-                    obj.billing_period_end_date = self._safe_cast(row.get('BillingPeriodEndDate'), datetime)
-                    obj.meter_usage = self._safe_cast(row.get('MeterUsage'), Decimal)
-                    obj.consumption_ipu = self._safe_cast(row.get('IPU'), Decimal)
-                    obj.scalar = row.get('Scalar')
-                    obj.metric_category = row.get('MetricCategory')
-                    obj.org_name = row.get('OrgName')
-                    obj.org_type = row.get('OrgType')
-                    obj.ipu_rate = self._safe_cast(row.get('IPURate'), Decimal)
-                    obj.save()
-
+                for i, row in enumerate(reader):
+                    lookup_params = {
+                        'configuracao': config,
+                        'org_id': self._clean_value(row.get('OrgId')),
+                        'meter_id': self._clean_value(row.get('MeterId')),
+                        'consumption_date': self._safe_cast(row.get('Date'), datetime)
+                    }
+                    if not all(lookup_params.values()):
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                        continue
+                    defaults_params = {
+                        'data_extracao': execution_timestamp,
+                        'meter_name': self._clean_value(row.get('MeterName')),
+                        'billing_period_start_date': self._safe_cast(row.get('BillingPeriodStartDate'), datetime),
+                        'billing_period_end_date': self._safe_cast(row.get('BillingPeriodEndDate'), datetime),
+                        'meter_usage': self._safe_cast(row.get('MeterUsage'), Decimal),
+                        'consumption_ipu': self._safe_cast(row.get('IPU'), Decimal),
+                        'scalar': self._clean_value(row.get('Scalar')),
+                        'metric_category': self._clean_value(row.get('MetricCategory')),
+                        'org_name': self._clean_value(row.get('OrgName')),
+                        'org_type': self._clean_value(row.get('OrgType')),
+                        'ipu_rate': self._safe_cast(row.get('IPURate'), Decimal),
+                    }
+                    ConsumoSummary.objects.update_or_create(**lookup_params, defaults=defaults_params)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo SUMMARY concluído."))
-            os.remove(csv_path)
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
+            raise
 
     @transaction.atomic
     def load_project_folder_csv(self, csv_path, config, execution_timestamp, log_prefix=""):
@@ -221,24 +252,27 @@ class Command(BaseCommand):
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
-                for row in reader:
-                    consumption_date, project_name, folder_path, org_id = self._safe_cast(row.get('Date'), datetime), row.get('Project'), row.get('Folder'), row.get('Org ID')
-                    if not all([consumption_date, project_name, folder_path, org_id]): continue
-                    
-                    obj, created = ConsumoProjectFolder.objects.get_or_create(
-                        configuracao=config, consumption_date=consumption_date, project_name=project_name,
-                        folder_path=folder_path, org_id=org_id,
-                        defaults={'data_extracao': execution_timestamp}
-                    )
-                    
-                    obj.org_type = row.get('Org Type')
-                    obj.total_consumption_ipu = self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
-                    obj.save()
-
+                for i, row in enumerate(reader):
+                    lookup_params = {
+                        'configuracao': config,
+                        'consumption_date': self._safe_cast(row.get('Date'), datetime),
+                        'project_name': self._clean_value(row.get('Project')),
+                        'folder_path': self._clean_value(row.get('Folder')),
+                        'org_id': self._clean_value(row.get('Org ID'))
+                    }
+                    if not lookup_params['consumption_date'] or not lookup_params['org_id']:
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                        continue
+                    defaults_params = {
+                        'data_extracao': execution_timestamp,
+                        'org_type': self._clean_value(row.get('Org Type')),
+                        'total_consumption_ipu': self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
+                    }
+                    ConsumoProjectFolder.objects.update_or_create(**lookup_params, defaults=defaults_params)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo PROJECT_FOLDER concluído."))
-            os.remove(csv_path)
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
+            raise
 
     @transaction.atomic
     def load_asset_csv(self, csv_path, config, execution_timestamp, log_prefix=""):
@@ -246,70 +280,76 @@ class Command(BaseCommand):
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
-                for row in reader:
-                    meter_id, consumption_date, asset_name, asset_type, project, folder, org_id, env_name = (
-                        row.get('Meter ID'), self._safe_cast(row.get('Date'), datetime), row.get('Asset Name'),
-                        row.get('Asset Type'), row.get('Project'), row.get('Folder'), row.get('Org ID'), row.get('Environment Name')
-                    )
-                    if not all([meter_id, consumption_date, asset_name, asset_type, project, folder, org_id, env_name]): continue
-                    
-                    obj, created = ConsumoAsset.objects.get_or_create(
-                        configuracao=config, meter_id=meter_id, consumption_date=consumption_date, asset_name=asset_name,
-                        asset_type=asset_type, project_name=project, folder_name=folder, org_id=org_id, runtime_environment=env_name,
-                        defaults={'data_extracao': execution_timestamp}
-                    )
-                    
-                    obj.meter_name = row.get('Meter Name')
-                    obj.org_type = row.get('Org Type')
-                    obj.environment_type = row.get('Environment Type')
-                    obj.tier = row.get('Tier')
-                    obj.ipu_per_unit = self._safe_cast(row.get('IPU Per Unit'), Decimal)
-                    obj.usage = self._safe_cast(row.get('Usage'), Decimal)
-                    obj.consumption_ipu = self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
-                    obj.save()
-
+                for i, row in enumerate(reader):
+                    lookup_params = {
+                        'configuracao': config,
+                        'meter_id': self._clean_value(row.get('Meter ID')),
+                        'consumption_date': self._safe_cast(row.get('Date'), datetime),
+                        'asset_name': self._clean_value(row.get('Asset Name')),
+                        'asset_type': self._clean_value(row.get('Asset Type')),
+                        'project_name': self._clean_value(row.get('Project')),
+                        'folder_name': self._clean_value(row.get('Folder')),
+                        'org_id': self._clean_value(row.get('Org ID')),
+                        'runtime_environment': self._clean_value(row.get('Environment Name')),
+                        'tier': self._clean_value(row.get('Tier')),
+                        'ipu_per_unit': self._safe_cast(row.get('IPU Per Unit'), Decimal)
+                    }
+                    if not all([lookup_params['meter_id'], lookup_params['consumption_date'], lookup_params['org_id']]):
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                        continue
+                    defaults_params = {
+                        'data_extracao': execution_timestamp,
+                        'meter_name': self._clean_value(row.get('Meter Name')),
+                        'org_type': self._clean_value(row.get('Org Type')),
+                        'environment_type': self._clean_value(row.get('Environment Type')),
+                        'usage': self._safe_cast(row.get('Usage'), Decimal),
+                        'consumption_ipu': self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
+                    }
+                    ConsumoAsset.objects.update_or_create(**lookup_params, defaults=defaults_params)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de ASSET populados com sucesso."))
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Asset: {e}")
-    
+            raise
+
     @transaction.atomic
     def load_cdi_job_csv(self, csv_path, config, meter_id, execution_timestamp, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCdiJobExecucao' com: {csv_path}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
-                for row in reader:
-                    task_run_id = row.get('Task Run ID')
-                    if not task_run_id: continue
-                    
-                    obj, created = ConsumoCdiJobExecucao.objects.get_or_create(
-                        configuracao=config, task_run_id=task_run_id,
-                        defaults={'data_extracao': execution_timestamp}
-                    )
-                    
-                    obj.meter_id_ref = meter_id
-                    obj.task_id = row.get('Task ID')
-                    obj.task_name = row.get('Task Name')
-                    obj.task_object_name = row.get('Task Object Name')
-                    obj.task_type = row.get('Task Type')
-                    obj.project_name = row.get('Project Name')
-                    obj.folder_name = row.get('Folder Name')
-                    obj.org_id = row.get('Org ID')
-                    obj.environment_id = row.get('Environment ID')
-                    obj.environment_name = row.get('Environment')
-                    obj.cores_used = self._safe_cast(row.get('Cores Used'), Decimal)
-                    obj.start_time = self._safe_cast(row.get('Start Time'), datetime)
-                    obj.end_time = self._safe_cast(row.get('End Time'), datetime)
-                    obj.status = row.get('Status')
-                    obj.metered_value_ipu = self._safe_cast(row.get('Metered Value'), Decimal)
-                    obj.audit_time = self._safe_cast(row.get('Audit Time'), datetime)
-                    obj.obm_task_time_seconds = self._safe_cast(row.get('OBM Task Time(s)'), int)
-                    obj.save()
-
+                for i, row in enumerate(reader):
+                    lookup_params = {
+                        'configuracao': config,
+                        'task_id': self._clean_value(row.get('Task ID')),
+                        'task_run_id': self._clean_value(row.get('Task Run ID')),
+                        'org_id': self._clean_value(row.get('Org ID')),
+                        'environment_id': self._clean_value(row.get('Environment ID')),
+                        'start_time': self._safe_cast(row.get('Start Time'), datetime),
+                        'end_time': self._safe_cast(row.get('End Time'), datetime)
+                    }
+                    if not all(lookup_params.values()):
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                        continue
+                    defaults_params = {
+                        'data_extracao': execution_timestamp,
+                        'meter_id_ref': meter_id,
+                        'task_name': self._clean_value(row.get('Task Name')),
+                        'task_object_name': self._clean_value(row.get('Task Object Name')),
+                        'task_type': self._clean_value(row.get('Task Type')),
+                        'project_name': self._clean_value(row.get('Project Name')),
+                        'folder_name': self._clean_value(row.get('Folder Name')),
+                        'environment_name': self._clean_value(row.get('Environment')),
+                        'cores_used': self._safe_cast(row.get('Cores Used'), Decimal),
+                        'status': self._clean_value(row.get('Status')),
+                        'metered_value_ipu': self._safe_cast(row.get('Metered Value'), Decimal),
+                        'audit_time': self._safe_cast(row.get('Audit Time'), datetime),
+                        'obm_task_time_seconds': self._safe_cast(row.get('OBM Task Time(s)'), int),
+                    }
+                    ConsumoCdiJobExecucao.objects.update_or_create(**lookup_params, defaults=defaults_params)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de JOB (CDI) para o meter {meter_id} populados com sucesso."))
-            os.remove(csv_path)
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CDI): {e}")
+            raise
 
     @transaction.atomic
     def load_cai_asset_summary_csv(self, csv_path, config, meter_id, execution_timestamp, log_prefix=""):
@@ -317,30 +357,31 @@ class Command(BaseCommand):
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
-                for row in reader:
-                    org_id, executed_asset, execution_date, execution_env = (
-                        row.get('Org ID'), row.get('Executed asset'), self._safe_cast(row.get('Date (in UTC)'), datetime), row.get('Execution env')
-                    )
-                    if not all([org_id, executed_asset, execution_date, execution_env]): continue
-                    
-                    obj, created = ConsumoCaiAssetSumario.objects.get_or_create(
-                        configuracao=config, org_id=org_id, executed_asset=executed_asset,
-                        execution_date=execution_date, execution_env=execution_env,
-                        defaults={'data_extracao': execution_timestamp}
-                    )
-                    
-                    obj.execution_type = row.get('Execution type')
-                    obj.invoked_by = row.get('Invoked by')
-                    obj.status = row.get('status')
-                    obj.execution_count = self._safe_cast(row.get('Execution count'), int)
-                    obj.total_execution_time_hours = self._safe_cast(row.get('Total Execution time (in hours)'), Decimal)
-                    obj.avg_execution_time_seconds = self._safe_cast(row.get('Average Execution time (in seconds)'), Decimal)
-                    obj.save()
-
+                for i, row in enumerate(reader):
+                    lookup_params = {
+                        'configuracao': config,
+                        'org_id': self._clean_value(row.get('Org ID')),
+                        'executed_asset': self._clean_value(row.get('Executed asset')),
+                        'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
+                        'execution_env': self._clean_value(row.get('Execution env'))
+                    }
+                    if not all(lookup_params.values()):
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                        continue
+                    defaults_params = {
+                        'data_extracao': execution_timestamp,
+                        'execution_type': self._clean_value(row.get('Execution type')),
+                        'invoked_by': self._clean_value(row.get('Invoked by')),
+                        'status': self._clean_value(row.get('status')),
+                        'execution_count': self._safe_cast(row.get('Execution count'), int),
+                        'total_execution_time_hours': self._safe_cast(row.get('Total Execution time (in hours)'), Decimal),
+                        'avg_execution_time_seconds': self._safe_cast(row.get('Average Execution time (in seconds)'), Decimal)
+                    }
+                    ConsumoCaiAssetSumario.objects.update_or_create(**lookup_params, defaults=defaults_params)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de JOB (CAI) para o meter {meter_id} populados com sucesso."))
-            os.remove(csv_path)
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CAI): {e}")
+            raise
 
     def get_filtered_meters_from_csv(self, csv_path, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Lendo meters do arquivo: {csv_path}")
@@ -357,14 +398,13 @@ class Command(BaseCommand):
                     meter_id = row.get('Meter ID')
                     if meter_name in allowed_meter_names and meter_id:
                         meters[meter_id] = meter_name
-            os.remove(csv_path)
             self.stdout.write(f"{log_prefix}    - Encontrados {len(meters)} meters únicos após o filtro.")
             return meters
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao ler meters do CSV: {e}")
             return {}
 
-    def run_export_flow(self, api_client, start_date, end_date, config, job_type=None, meter_id=None, file_prefix="", job_loader=None, log_prefix=""):
+    def run_export_flow(self, api_client, start_date, end_date, config, file_paths, job_type=None, meter_id=None, file_prefix="", job_loader=None, log_prefix=""):
         export_name = job_type or f"meterId_{meter_id}"
         export_suffix = job_type or f"meterId_{meter_id}"
         self.stdout.write(f"\n{log_prefix} --- Iniciando fluxo de exportação para: {export_name} ---")
@@ -391,11 +431,10 @@ class Command(BaseCommand):
             if final_status == "SUCCESS":
                 try:
                     download_filename = f"export_{export_name.lower().replace(' ', '_')}_{job_id}.zip"
-                    download_path = os.path.join(settings.BASE_DIR, 'downloads', download_filename)
+                    download_path = os.path.join(file_paths['downloads'], download_filename)
                     zip_path = api_client.download_export_file(job_id, download_path)
                     if zip_path:
-                        extract_dir = os.path.join(settings.BASE_DIR, 'arquivos')
-                        csv_path = self.unzip_file(zip_path, extract_dir, export_suffix, file_prefix, log_prefix)
+                        csv_path = self.unzip_file(zip_path, file_paths['arquivos'], export_suffix, file_prefix, log_prefix)
                         if csv_path:
                             execution_timestamp = timezone.now()
                             if job_type == "SUMMARY": self.load_summary_csv(csv_path, config, execution_timestamp, log_prefix)
@@ -410,22 +449,23 @@ class Command(BaseCommand):
                     ExtracaoLog.objects.create(configuracao=config, etapa="LOAD_CSV", status="FAILED", detalhes=f"Falha ao carregar dados para '{export_name}'", mensagem_erro=str(e))
         return None
 
-    def run_summary_asset_jobs_flow(self, api_client, start_date_str, end_date_str, config, log_prefix):
-        self.run_export_flow(api_client, start_date_str, end_date_str, config, job_type="SUMMARY", log_prefix=log_prefix)
-        asset_csv_path = self.run_export_flow(api_client, start_date_str, end_date_str, config, job_type="ASSET", log_prefix=log_prefix)
+    def run_summary_asset_jobs_flow(self, api_client, start_date_str, end_date_str, config, file_paths, log_prefix):
+        self.run_export_flow(api_client, start_date_str, end_date_str, config, file_paths, job_type="SUMMARY", log_prefix=log_prefix)
+        asset_csv_path = self.run_export_flow(api_client, start_date_str, end_date_str, config, file_paths, job_type="ASSET", log_prefix=log_prefix)
 
-        if asset_csv_path:
+        if asset_csv_path and os.path.exists(asset_csv_path):
             asset_basename = os.path.splitext(os.path.basename(asset_csv_path))[0]
             asset_prefix = asset_basename.removesuffix('_ASSET') + '_'
+            
             cdi_meter_id = "a2nB20h1o0lc7k3P9xtWS8"
             cai_meter_ids = {"bN6mes5n4GGciiMkuoDlCz", "3uIRkIV5Rt9lBbAPzeR5Kj"}
-            path_para_ler_meters = asset_csv_path
-            meters = self.get_filtered_meters_from_csv(path_para_ler_meters, log_prefix)
+            
+            meters = self.get_filtered_meters_from_csv(asset_csv_path, log_prefix)
             
             if not meters:
-                self.stdout.write(f"{log_prefix} Nenhum meter encontrado no arquivo de Asset para processar.")
+                self.stdout.write(f"{log_prefix} Nenhum meter (CDI/CAI) encontrado no arquivo de Asset para processar.")
             else:
-                self.stdout.write(f"\n{log_prefix} Iniciando extração para {len(meters)} meters encontrados...")
+                self.stdout.write(f"\n{log_prefix} Iniciando extração detalhada para {len(meters)} meters encontrados...")
                 for meter_id, meter_name in meters.items():
                     job_loader_func = None
                     if meter_id == cdi_meter_id:
@@ -435,45 +475,47 @@ class Command(BaseCommand):
                     
                     if job_loader_func:
                         self.run_export_flow(
-                            api_client, start_date_str, end_date_str, config, 
+                            api_client, start_date_str, end_date_str, config, file_paths,
                             meter_id=meter_id, file_prefix=asset_prefix, job_loader=job_loader_func, log_prefix=log_prefix
                         )
                     else:
                         self.stdout.write(self.style.WARNING(f"{log_prefix}    - Meter ID {meter_id} ({meter_name}) não possui um loader definido. Pulando."))
         else:
-            self.stderr.write(self.style.ERROR(f"{log_prefix} Arquivo de ASSET não foi gerado pela API. Fluxo de jobs (CDI/CAI) não pode continuar."))
-            ExtracaoLog.objects.create(configuracao=config, etapa="EXPORT_JOB", status="FAILED", detalhes="Falha ao gerar arquivo de ASSET.")
+            self.stderr.write(self.style.ERROR(f"{log_prefix} Arquivo de ASSET não foi gerado ou encontrado. Fluxo de jobs (CDI/CAI) não pode continuar."))
+            ExtracaoLog.objects.create(configuracao=config, etapa="EXPORT_JOB", status="FAILED", detalhes="Falha ao gerar ou localizar arquivo de ASSET.")
 
     def processar_configuracao(self, config):
+        start_time = time.monotonic()
         log_prefix = f"[{config.apelido_configuracao} | {config.cliente.nome_cliente}]"
         self.stdout.write(f"\n>> Processando: {log_prefix}")
         
         try:
+            self._cleanup_config_files(config)
+            
+            arquivos_dir, downloads_dir = self._get_config_specific_paths(config)
+            file_paths = {'arquivos': arquivos_dir, 'downloads': downloads_dir}
+            
             api_client = InformaticaAPIClient(config.iics_pod_url, config.iics_username, config.iics_password, self, log_prefix)
             if not api_client.login():
                 return
-            ExtracaoLog.objects.create(configuracao=config, etapa="LOGIN", status="SUCCESS")
-        except Exception as e:
-            self.stderr.write(self.style.ERROR(f"{log_prefix} Processo abortado devido a falha no login: {e}"))
-            ExtracaoLog.objects.create(configuracao=config, etapa="LOGIN", status="FAILED", mensagem_erro=str(e), resposta_api=e.response.text if hasattr(e, 'response') and e.response else None)
-            return
 
-        if config.ultima_extracao_enddate:
-            start_date_obj = config.ultima_extracao_enddate
-        else:
-            start_date_obj = timezone.now() - timedelta(days=30)
-        
-        end_date_obj_for_api = timezone.now()
-        end_date_to_save = timezone.localtime(end_date_obj_for_api).replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        start_date_str = start_date_obj.strftime("%Y-%m-%dT00:00:00Z")
-        end_date_str = end_date_obj_for_api.strftime("%Y-%m-%dT23:59:59Z")
-        self.stdout.write(f"{log_prefix} Período de extração: {start_date_str} a {end_date_str}")
-        
-        try:
+            ExtracaoLog.objects.create(configuracao=config, etapa="LOGIN", status="SUCCESS")
+
+            if config.ultima_extracao_enddate:
+                start_date_obj = config.ultima_extracao_enddate
+            else:
+                start_date_obj = timezone.now() - timedelta(days=30)
+            
+            end_date_obj_for_api = timezone.now()
+            end_date_to_save = timezone.localtime(end_date_obj_for_api).replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            start_date_str = start_date_obj.strftime("%Y-%m-%dT00:00:00Z")
+            end_date_str = end_date_obj_for_api.strftime("%Y-%m-%dT23:59:59Z")
+            self.stdout.write(f"{log_prefix} Período de extração: {start_date_str} a {end_date_str}")
+            
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"{log_prefix}_sub") as sub_executor:
-                future_asset_chain = sub_executor.submit(self.run_summary_asset_jobs_flow, api_client, start_date_str, end_date_str, config, log_prefix)
-                future_project = sub_executor.submit(self.run_export_flow, api_client, start_date_str, end_date_str, config, job_type="PROJECT_FOLDER", log_prefix=log_prefix)
+                future_asset_chain = sub_executor.submit(self.run_summary_asset_jobs_flow, api_client, start_date_str, end_date_str, config, file_paths, log_prefix)
+                future_project = sub_executor.submit(self.run_export_flow, api_client, start_date_str, end_date_str, config, file_paths, job_type="PROJECT_FOLDER", log_prefix=log_prefix)
                 
                 future_asset_chain.result()
                 future_project.result()
@@ -486,6 +528,9 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"{log_prefix} Ocorreu um erro inesperado durante o fluxo: {e}"))
             ExtracaoLog.objects.create(configuracao=config, etapa="FLUXO_GERAL", status="FAILED", mensagem_erro=str(e))
         finally:
+            end_time = time.monotonic()
+            duration = timedelta(seconds=end_time - start_time)
+            self.stdout.write(self.style.SUCCESS(f"{log_prefix} Processo concluído em {duration}"))
             connection.close()
 
     def handle(self, *args, **options):
