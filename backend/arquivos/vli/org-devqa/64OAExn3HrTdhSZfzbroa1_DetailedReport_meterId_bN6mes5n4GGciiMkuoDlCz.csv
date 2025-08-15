@@ -1,0 +1,5 @@
+Org ID,Execution type,Executed asset,Date (in UTC),Invoked by,Execution env,status,Execution count,Total Execution time (in hours),Average Execution time (in seconds)
+64OAExn3HrTdhSZfzbroa1,Process,p_Entrada_Desacoplada_Granular,2025-08-11,REST,Cloud,Completed,3,0.0027825000,3.33900
+64OAExn3HrTdhSZfzbroa1,Process,p_Entrada_Desacoplada_Granular,2025-08-11,REST,Cloud,Faulted,7,0.0063105556,3.24543
+64OAExn3HrTdhSZfzbroa1,Process,p_Entrada_Desacoplada_Granular,2025-08-12,REST,Cloud,Completed,2,0.0069475000,12.50550
+64OAExn3HrTdhSZfzbroa1,Process,p_Planob,2025-08-14,REST,Cloud,Completed,2,0.0002616667,0.47100

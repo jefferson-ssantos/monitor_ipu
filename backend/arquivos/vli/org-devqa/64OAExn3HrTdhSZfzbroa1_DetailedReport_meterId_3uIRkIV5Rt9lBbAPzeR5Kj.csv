@@ -1,2 +1,4 @@
 Org ID,Execution type,Executed asset,Date (in UTC),Invoked by,Execution env,status,Execution count,Total Execution time (in hours),Average Execution time (in seconds)
+64OAExn3HrTdhSZfzbroa1,Process,mp_MENSAGERIA_GRANULAR,2025-07-31,REST,01CR7S08000000000002_VLI_Logistica_DEV,Completed,1,0.0026102778,9.39700
+64OAExn3HrTdhSZfzbroa1,Process,mp_MENSAGERIA_GRANULAR,2025-08-05,REST,01CR7S08000000000002_VLI_Logistica_DEV,Completed,4,0.0035761111,3.21850
 64OAExn3HrTdhSZfzbroa1,Process,mp_MENSAGERIA_GRANULAR,2025-08-14,REST,01CR7S08000000000002_VLI_Logistica_DEV,Completed,1,0.0028430556,10.23500

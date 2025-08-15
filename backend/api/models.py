@@ -147,7 +147,7 @@ class ConsumoCaiAssetSumario(models.Model):
     class Meta:
         db_table = 'api_consumocaiassetsumario'
         verbose_name_plural = "Consumos (CAI Summary)"
-        unique_together = ('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env')
+        unique_together = ('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env', 'status')
 
 class ExtracaoLog(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE, related_name="logs")

@@ -197,14 +197,23 @@ class Command(BaseCommand):
                 except StopIteration:
                     self.stderr.write(f"{log_prefix}    - Nenhum arquivo CSV encontrado no zip.")
                     return None
+
+                # Extrai o arquivo para o diretório de destino
                 original_csv_path = zip_ref.extract(csv_filename_in_zip, path=extract_to_dir)
+
+            # Lógica de renomeação para evitar conflitos
             base_name = os.path.splitext(os.path.basename(original_csv_path))[0]
             clean_suffix = export_suffix.replace(' ', '_').replace("'", "")
-            new_filename = f"{file_prefix}{base_name}_{clean_suffix}.csv"
+
+            # Adiciona um timestamp para garantir unicidade no nome do arquivo final
+            timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            new_filename = f"{file_prefix}{base_name}_{clean_suffix}_{timestamp_str}.csv"
             final_csv_path = os.path.join(extract_to_dir, new_filename)
+
             if os.path.exists(final_csv_path):
                 os.remove(final_csv_path)
             os.rename(original_csv_path, final_csv_path)
+
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Arquivo descompactado e salvo como: {final_csv_path}"))
             return final_csv_path
         except Exception as e:
@@ -418,7 +427,8 @@ class Command(BaseCommand):
                         'org_id': self._clean_value(row.get('Org ID')),
                         'executed_asset': self._clean_value(row.get('Executed asset')),
                         'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
-                        'execution_env': self._clean_value(row.get('Execution env'))
+                        'execution_env': self._clean_value(row.get('Execution env')),
+                        'status': self._clean_value(row.get('status'))
                     }
                     if not all(lookup_params.values()):
                         self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
@@ -427,7 +437,6 @@ class Command(BaseCommand):
                         'data_extracao': execution_timestamp,
                         'execution_type': self._clean_value(row.get('Execution type')),
                         'invoked_by': self._clean_value(row.get('Invoked by')),
-                        'status': self._clean_value(row.get('status')),
                         'execution_count': self._safe_cast(row.get('Execution count'), int),
                         'total_execution_time_hours': self._safe_cast(row.get('Total Execution time (in hours)'), Decimal),
                         'avg_execution_time_seconds': self._safe_cast(row.get('Average Execution time (in seconds)'), Decimal)

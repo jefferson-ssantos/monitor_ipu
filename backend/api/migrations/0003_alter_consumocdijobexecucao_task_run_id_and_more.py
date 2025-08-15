@@ -21,7 +21,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterUniqueTogether(
             name='consumocaiassetsumario',
-            unique_together={('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env')},
+            unique_together={('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env', 'status')},
         ),
         migrations.AlterUniqueTogether(
             name='consumocdijobexecucao',
