@@ -428,7 +428,7 @@ class Command(BaseCommand):
                         'executed_asset': self._clean_value(row.get('Executed asset')),
                         'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
                         'execution_env': self._clean_value(row.get('Execution env')),
-                        'status': self._clean_value(row.get('status'))
+                        'status': self._clean_value(row.get('status')),
                         'invoked_by': self._clean_value(row.get('Invoked by'))
                     }
                     if not all(lookup_params.values()):
