@@ -429,6 +429,7 @@ class Command(BaseCommand):
                         'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
                         'execution_env': self._clean_value(row.get('Execution env')),
                         'status': self._clean_value(row.get('status'))
+                        'invoked_by': self._clean_value(row.get('Invoked by'))
                     }
                     if not all(lookup_params.values()):
                         self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
@@ -436,8 +437,7 @@ class Command(BaseCommand):
                     defaults_params = {
                         'data_extracao': execution_timestamp,
                         'execution_type': self._clean_value(row.get('Execution type')),
-                        'invoked_by': self._clean_value(row.get('Invoked by')),
-                        'execution_count': self._safe_cast(row.get('Execution count'), int),
+                         'execution_count': self._safe_cast(row.get('Execution count'), int),
                         'total_execution_time_hours': self._safe_cast(row.get('Total Execution time (in hours)'), Decimal),
                         'avg_execution_time_seconds': self._safe_cast(row.get('Average Execution time (in seconds)'), Decimal)
                     }

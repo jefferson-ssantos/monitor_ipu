@@ -137,7 +137,7 @@ class ConsumoCaiAssetSumario(models.Model):
     execution_type = models.CharField(max_length=255, null=True, blank=True)
     executed_asset = models.TextField(null=True, blank=True)
     execution_date = models.DateTimeField(null=True, blank=True)
-    invoked_by = models.TextField(null=True, blank=True)
+    invoked_by = models.TextField(max_length=255, null=True, blank=True)
     execution_env = models.TextField(null=True, blank=True)
     status = models.CharField(max_length=100, null=True, blank=True)
     execution_count = models.BigIntegerField(null=True, blank=True)
@@ -147,7 +147,7 @@ class ConsumoCaiAssetSumario(models.Model):
     class Meta:
         db_table = 'api_consumocaiassetsumario'
         verbose_name_plural = "Consumos (CAI Summary)"
-        unique_together = ('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env', 'status')
+        unique_together = ('configuracao', 'org_id', 'executed_asset', 'execution_date', 'execution_env', 'status', 'invoked_by')
 
 class ExtracaoLog(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE, related_name="logs")
