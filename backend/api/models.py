@@ -1,10 +1,12 @@
 # backend/api/models.py
 
 from django.db import models
+from django.utils import timezone
 
 class Clientes(models.Model):
     nome_cliente = models.CharField(max_length=255)
     email_contato = models.EmailField(unique=True)
+    qnt_ipus_contratadas  = models.DecimalField(max_digits=10, decimal_places=4)
     preco_por_ipu = models.DecimalField(max_digits=10, decimal_places=4)
     ativo = models.BooleanField(default=True)
     data_criacao = models.DateTimeField(auto_now_add=True)
@@ -33,8 +35,6 @@ class ConfiguracaoIDMC(models.Model):
         db_table = 'api_configuracaoidmc'
         verbose_name_plural = "Configurações IDMC"
         ordering = ['cliente', 'apelido_configuracao']
-
-# --- MODELOS DE CONSUMO ATUALIZADOS COM CHAVES CORRETAS ---
 
 class ConsumoSummary(models.Model):
     configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE)
@@ -126,7 +126,6 @@ class ConsumoCdiJobExecucao(models.Model):
     class Meta:
         db_table = 'api_consumocdijobexecucao'
         verbose_name_plural = "Consumos (CDI Job)"
-        # CHAVE ÚNICA ATUALIZADA CONFORME SOLICITADO
         unique_together = ('configuracao', 'task_id', 'task_run_id', 'org_id', 'environment_id', 'start_time', 'end_time')
 
 class ConsumoCaiAssetSumario(models.Model):
@@ -165,3 +164,23 @@ class ExtracaoLog(models.Model):
         db_table = 'api_extracaolog'
         verbose_name_plural = "Logs de Extração"
         ordering = ['-timestamp']
+
+class MarcadorExtracao(models.Model):
+    configuracao = models.OneToOneField(
+        ConfiguracaoIDMC,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        verbose_name="Configuração"
+    )
+    ultima_extracao_enddate = models.DateTimeField(
+        default=timezone.now,
+        verbose_name="Data Final da Última Extração"
+    )
+
+    class Meta:
+        db_table = 'api_marcadorextracao'
+        verbose_name = "Marcador de Extração"
+        verbose_name_plural = "Marcadores de Extração"
+
+    def __str__(self):
+        return f"Marcador para {self.configuracao.name}"

@@ -1,193 +1,67 @@
-# -*- coding: utf-8 -*-
+# backend/api/management/commands/fetch_ipu_data.py
+
+import os
 import requests
 import time
-import os
 import zipfile
 import csv
-import re
-from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from concurrent.futures import ThreadPoolExecutor
-
-# Import dateutil parser
-try:
-    from dateutil import parser as date_parser
-except ImportError:
-    # Provide a helpful error message if dateutil is not installed
-    raise ImportError("A biblioteca 'python-dateutil' é necessária. Por favor, adicione-a ao seu requirements.txt e reconstrua a imagem.")
+import pandas as pd
+from datetime import datetime, timedelta, timezone
 
 from django.core.management.base import BaseCommand
-from django.conf import settings
-from django.db import transaction, connection
-from django.utils import timezone
-from django.utils.text import slugify
+from django.db import transaction
+from api.models import ConfiguracaoIDMC, ConsumoSummary, ConsumoProjectFolder, ConsumoAsset, ConsumoCdiJobExecucao, ConsumoCaiAssetSumario, MarcadorExtracao
 
-# Importando os modelos Django que criamos, incluindo o de Log
-from api.models import (
-    ConfiguracaoIDMC,
-    ConsumoSummary,
-    ConsumoProjectFolder,
-    ConsumoAsset,
-    ConsumoCdiJobExecucao,
-    ConsumoCaiAssetSumario,
-    ExtracaoLog
-)
-
-class InformaticaAPIClient:
-    def __init__(self, iics_pod, username, password, command_instance, log_prefix=""):
-        self.iics_pod = iics_pod
-        self.username = username
-        self.password = password
-        self.session_id = None
-        self.base_url = None
-        self.session = requests.Session()
-        self.command = command_instance
-        self.log_prefix = log_prefix
-
-    def login(self):
-        login_url = f"{self.iics_pod}/saas/public/core/v3/login"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        payload = {"username": self.username, "password": self.password}
-        self.command.stdout.write(f"{self.log_prefix} 1. Realizando login na API da Informatica...")
-        try:
-            response = self.session.post(login_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            self.session_id = data.get("userInfo", {}).get("sessionId")
-            products = data.get("products", [])
-            if products:
-                self.base_url = products[0].get("baseApiUrl")
-            if not self.session_id or not self.base_url:
-                raise ValueError("SessionId ou BaseURL não encontrados na resposta do login.")
-            self.session.headers.update({
-                "INFA-SESSION-ID": self.session_id,
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            })
-            self.command.stdout.write(self.command.style.SUCCESS(f"{self.log_prefix} Login realizado com sucesso!"))
-            return True
-        except requests.exceptions.RequestException as e:
-            raise e
-
-    def export_metering_data(self, start_date, end_date, job_type=None, meter_id=None):
-        if not self.base_url:
-            raise ValueError("BaseURL não está definida.")
-        payload = {"startDate": start_date, "endDate": end_date, "callbackUrl": "https://MyExportJobStatus.com"}
-        if meter_id:
-            export_url = f"{self.base_url}/public/core/v3/license/metering/ExportServiceJobLevelMeteringData"
-            payload["meterId"] = meter_id
-            export_name = f"meterId_{meter_id}"
-        elif job_type:
-            export_url = f"{self.base_url}/public/core/v3/license/metering/ExportMeteringData"
-            payload["jobType"] = job_type
-            export_name = f"tipo '{job_type}'"
-        else:
-            raise ValueError("É necessário fornecer um job_type ou um meter_id.")
-
-        self.command.stdout.write(f"{self.log_prefix} 2. Criando job de exportação para {export_name}...")
-        response = self.session.post(export_url, json=payload, timeout=30)
+# Funções auxiliares movidas para o topo para melhor organização
+def get_session_id(config, log_prefix=""):
+    """Realiza login na API da Informatica e retorna o sessionId."""
+    url = f"{config.base_url}/saas/public/core/v3/login"
+    payload = {
+        "username": config.username,
+        "password": config.get_password()
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
-        data = response.json()
-        job_id = data.get("jobId")
-        if not job_id:
-            raise ValueError(f"JobId não encontrado na resposta da API de exportação. Resposta: {data}")
-        self.command.stdout.write(self.command.style.SUCCESS(f"{self.log_prefix} Job de exportação criado. JobId: {job_id}"))
-        return job_id
-
-    def check_job_status(self, job_id):
-        if not self.base_url or not job_id: return "FAILED"
-        status_url = f"{self.base_url}/public/core/v3/license/metering/ExportMeteringData/{job_id}"
-        self.command.stdout.write(f"{self.log_prefix} 3. Verificando status do JobId {job_id}...")
-        timeout_seconds, start_time = 600, time.time()
-        final_status = "TIMEOUT"
-        while time.time() - start_time < timeout_seconds:
-            try:
-                response = self.session.get(status_url, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-                status = data.get("status")
-                self.command.stdout.write(f"{self.log_prefix}    - Status atual: {status}")
-                if status == "SUCCESS":
-                    self.command.stdout.write(self.command.style.SUCCESS(f"{self.log_prefix} Job concluído com sucesso!"))
-                    final_status = "SUCCESS"
-                    break
-                if status in ["FAILED", "CANCELLED"]:
-                    self.command.stderr.write(f"{self.log_prefix} Job falhou ou foi cancelado. Status: {status}")
-                    final_status = status
-                    break
-                time.sleep(15)
-            except requests.exceptions.RequestException as e:
-                self.command.stderr.write(f"{self.log_prefix} Falha ao verificar status do job: {e}")
-                final_status = "FAILED"
-                break
-        if final_status == "TIMEOUT":
-            self.command.stderr.write(f"{self.log_prefix} Timeout: O job não foi concluído no tempo esperado.")
-        return final_status
-
-    def download_export_file(self, job_id, download_path):
-        if not self.base_url or not job_id: return None
-        download_url = f"{self.base_url}/public/core/v3/license/metering/ExportMeteringData/{job_id}/download"
-        self.command.stdout.write(f"{self.log_prefix} 4. Realizando download do arquivo para o JobId {job_id}...")
-        response = self.session.get(download_url, stream=True, timeout=300)
-        response.raise_for_status()
-        os.makedirs(os.path.dirname(download_path), exist_ok=True)
-        with open(download_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        self.command.stdout.write(self.command.style.SUCCESS(f"{self.log_prefix} Download concluído: {download_path}"))
-        return download_path
+        return response.json().get("userInfo", {}).get("sessionId")
+    except requests.exceptions.RequestException as e:
+        print(f"{log_prefix}Erro no login: {e}")
+        return None
 
 class Command(BaseCommand):
-    help = 'Executa a rotina para buscar e popular dados de consumo de IPU da Informatica.'
+    help = 'Extrai dados de consumo de IPU da API da Informatica Cloud.'
+
+    # --- MÉTODOS DE LIMPEZA E CASTING ---
+    def _safe_cast(self, value, cast_type, default=None):
+        if value in (None, ''):
+            return default
+        try:
+            if cast_type == datetime:
+                return pd.to_datetime(value).replace(tzinfo=timezone.utc)
+            return cast_type(value)
+        except (ValueError, TypeError):
+            return default
 
     def _clean_value(self, value):
-        if value is None or value.lower() == 'null' or value.strip() == '':
-            return None
-        return value
+        return value.strip() if isinstance(value, str) else value
 
-    def _safe_cast(self, value, cast_type, default=None):
-        cleaned_value = self._clean_value(value)
-        if cleaned_value is None:
-            return default
+    # --- MÉTODOS DE MANIPULAÇÃO DE ARQUIVOS ---
+    def clean_old_files(self, config, log_prefix=""):
+        self.stdout.write(f"{log_prefix}Limpando arquivos antigos para a configuração '{config.name}'...")
+        base_dir = '/app/arquivos'
+        org_path = os.path.join(base_dir, config.cliente.lower(), config.slug)
+        download_path = os.path.join('/app/downloads', config.cliente.lower(), config.slug)
 
-        try:
-            if cast_type == Decimal:
-                return Decimal(cleaned_value)
-            if cast_type == int:
-                return int(float(cleaned_value))
-            if cast_type == datetime:
-                dt_obj = date_parser.parse(cleaned_value)
-                # Se a data for "naive", torna-a "aware" usando o fuso horário padrão do Django
-                if timezone.is_naive(dt_obj):
-                    dt_obj = timezone.make_aware(dt_obj, timezone.get_default_timezone())
-                # Padroniza para UTC para garantir consistência na comparação e armazenamento
-                return dt_obj.astimezone(timezone.utc)
-            return cast_type(cleaned_value)
-        except (ValueError, TypeError, InvalidOperation, date_parser.ParserError):
-            return default
-
-    def _get_config_specific_paths(self, config):
-        safe_client_name = slugify(config.cliente.nome_cliente)
-        safe_config_name = slugify(config.apelido_configuracao)
-        base_arquivos_dir = os.path.join(settings.BASE_DIR, 'arquivos', safe_client_name, safe_config_name)
-        base_downloads_dir = os.path.join(settings.BASE_DIR, 'downloads', safe_client_name, safe_config_name)
-        os.makedirs(base_arquivos_dir, exist_ok=True)
-        os.makedirs(base_downloads_dir, exist_ok=True)
-        return base_arquivos_dir, base_downloads_dir
-
-    def _cleanup_config_files(self, config):
-        self.stdout.write(f"Limpando arquivos antigos para a configuração '{config.apelido_configuracao}'...")
-        arquivos_dir, downloads_dir = self._get_config_specific_paths(config)
-        for directory, extension in [(arquivos_dir, '.csv'), (downloads_dir, '.zip')]:
-            if os.path.exists(directory):
-                for filename in os.listdir(directory):
-                    if filename.lower().endswith(extension):
-                        try:
-                            os.remove(os.path.join(directory, filename))
-                        except OSError as e:
-                            self.stderr.write(self.style.WARNING(f"Não foi possível remover o arquivo antigo {filename}: {e}"))
-        self.stdout.write(self.style.SUCCESS("Limpeza da configuração concluída."))
-
+        for path in [org_path, download_path]:
+            os.makedirs(path, exist_ok=True)
+            for f in os.listdir(path):
+                os.remove(os.path.join(path, f))
+        self.stdout.write(f"{log_prefix}Limpeza da configuração concluída.")
+    
     def unzip_file(self, zip_path, extract_to_dir, export_suffix, file_prefix="", log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Descompactando {zip_path}...")
         try:
@@ -198,14 +72,10 @@ class Command(BaseCommand):
                     self.stderr.write(f"{log_prefix}    - Nenhum arquivo CSV encontrado no zip.")
                     return None
 
-                # Extrai o arquivo para o diretório de destino
                 original_csv_path = zip_ref.extract(csv_filename_in_zip, path=extract_to_dir)
 
-            # Lógica de renomeação para evitar conflitos
             base_name = os.path.splitext(os.path.basename(original_csv_path))[0]
             clean_suffix = export_suffix.replace(' ', '_').replace("'", "")
-
-            # Adiciona um timestamp para garantir unicidade no nome do arquivo final
             timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S%f")
             new_filename = f"{file_prefix}{base_name}_{clean_suffix}_{timestamp_str}.csv"
             final_csv_path = os.path.join(extract_to_dir, new_filename)
@@ -220,402 +90,390 @@ class Command(BaseCommand):
             self.stderr.write(f"{log_prefix}    - Ocorreu um erro ao descompactar: {e}")
             return None
 
-    @transaction.atomic
-    def load_summary_csv(self, csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
-        self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoSummary' com: {csv_path}")
+    # --- MÉTODOS DE CARGA DE DADOS (CSV) ---
+    def load_generic_csv(self, csv_path, model_class, field_mapping, config, start_date_obj, end_date_obj, date_fields, log_prefix=""):
+        model_name = model_class._meta.verbose_name_plural.split('(')[-1].split(')')[0]
+        self.stdout.write(f"{log_prefix}    - Populando tabela '{model_class._meta.model_name}' com: {csv_path}")
 
-        # Lógica de deleção
-        deletion_filter = {
-            'configuracao': config,
-            'consumption_date__gte': start_date_obj,
-            'consumption_date__lte': end_date_obj
-        }
-        self.stdout.write(f"{log_prefix}    - Query de deleção para ConsumoSummary: .delete(). O filtro é: {deletion_filter}")
-        deleted_count, _ = ConsumoSummary.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de SUMMARY deletados.")
+        delete_filter = {'configuracao': config}
+        if date_fields:
+            # Garante que os objetos de data não tenham informação de fuso horário para a deleção
+            start_date_naive = start_date_obj.replace(tzinfo=None)
+            end_date_naive = end_date_obj.replace(tzinfo=None)
+            delete_filter[f'{date_fields[0]}__gte'] = start_date_naive
+            delete_filter[f'{date_fields[1]}__lte'] = end_date_naive
 
-        try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'org_id': self._clean_value(row.get('OrgId')),
-                        'meter_id': self._clean_value(row.get('MeterId')),
-                        'consumption_date': self._safe_cast(row.get('Date'), datetime)
-                    }
-                    if not all(lookup_params.values()):
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
-                        continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'meter_name': self._clean_value(row.get('MeterName')),
-                        'billing_period_start_date': self._safe_cast(row.get('BillingPeriodStartDate'), datetime),
-                        'billing_period_end_date': self._safe_cast(row.get('BillingPeriodEndDate'), datetime),
-                        'meter_usage': self._safe_cast(row.get('MeterUsage'), Decimal),
-                        'consumption_ipu': self._safe_cast(row.get('IPU'), Decimal),
-                        'scalar': self._clean_value(row.get('Scalar')),
-                        'metric_category': self._clean_value(row.get('MetricCategory')),
-                        'org_name': self._clean_value(row.get('OrgName')),
-                        'org_type': self._clean_value(row.get('OrgType')),
-                        'ipu_rate': self._safe_cast(row.get('IPURate'), Decimal),
-                    }
-                    ConsumoSummary.objects.update_or_create(**lookup_params, defaults=defaults_params)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo SUMMARY concluído."))
-        except Exception as e:
-            self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
-            raise
+        with transaction.atomic():
+            try:
+                deleted_count, _ = model_class.objects.filter(**delete_filter).delete()
+                self.stdout.write(self.style.WARNING(f"{log_prefix}    - {deleted_count} registros antigos de {model_name} deletados."))
 
-    @transaction.atomic
-    def load_project_folder_csv(self, csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
-        self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoProjectFolder' com: {csv_path}")
+                with open(csv_path, mode='r', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    batch = []
+                    for row in reader:
+                        instance_data = {'configuracao': config}
+                        for model_field, csv_header in field_mapping.items():
+                            raw_value = row.get(csv_header)
+                            field_obj = model_class._meta.get_field(model_field)
+                            
+                            if field_obj.get_internal_type() in ['DateTimeField', 'DateField']:
+                                instance_data[model_field] = self._safe_cast(raw_value, datetime)
+                            elif field_obj.get_internal_type() in ['FloatField', 'DecimalField']:
+                                instance_data[model_field] = self._safe_cast(raw_value, float)
+                            elif field_obj.get_internal_type() in ['IntegerField', 'BigAutoField']:
+                                instance_data[model_field] = self._safe_cast(raw_value, int)
+                            else:
+                                instance_data[model_field] = self._clean_value(raw_value)
+                        batch.append(model_class(**instance_data))
+                    
+                    model_class.objects.bulk_create(batch)
+            except Exception as e:
+                self.stderr.write(f"{log_prefix}    - Erro CRÍTICO ao popular dados: {e}")
+                raise
 
-        # Lógica de deleção
-        deletion_filter = {
-            'configuracao': config,
-            'consumption_date__gte': start_date_obj,
-            'consumption_date__lte': end_date_obj
-        }
-        self.stdout.write(f"{log_prefix}    - Query de deleção para ConsumoProjectFolder: .delete(). O filtro é: {deletion_filter}")
-        deleted_count, _ = ConsumoProjectFolder.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de PROJECT_FOLDER deletados.")
-
-        try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'consumption_date': self._safe_cast(row.get('Date'), datetime),
-                        'project_name': self._clean_value(row.get('Project')),
-                        'folder_path': self._clean_value(row.get('Folder')),
-                        'org_id': self._clean_value(row.get('Org ID'))
-                    }
-                    if not lookup_params['consumption_date'] or not lookup_params['org_id']:
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
-                        continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'org_type': self._clean_value(row.get('Org Type')),
-                        'total_consumption_ipu': self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
-                    }
-                    ConsumoProjectFolder.objects.update_or_create(**lookup_params, defaults=defaults_params)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo PROJECT_FOLDER concluído."))
-        except Exception as e:
-            self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
-            raise
-
-    @transaction.atomic
-    def load_asset_csv(self, csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
-        self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoAsset' com: {csv_path}")
-
-        # Lógica de deleção
-        deletion_filter = {
-            'configuracao': config,
-            'consumption_date__gte': start_date_obj,
-            'consumption_date__lte': end_date_obj
-        }
-        self.stdout.write(f"{log_prefix}    - Query de deleção para ConsumoAsset: .delete(). O filtro é: {deletion_filter}")
-        deleted_count, _ = ConsumoAsset.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de ASSET deletados.")
-
-        try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'meter_id': self._clean_value(row.get('Meter ID')),
-                        'consumption_date': self._safe_cast(row.get('Date'), datetime),
-                        'asset_name': self._clean_value(row.get('Asset Name')),
-                        'asset_type': self._clean_value(row.get('Asset Type')),
-                        'project_name': self._clean_value(row.get('Project')),
-                        'folder_name': self._clean_value(row.get('Folder')),
-                        'org_id': self._clean_value(row.get('Org ID')),
-                        'runtime_environment': self._clean_value(row.get('Environment Name')),
-                        'tier': self._clean_value(row.get('Tier')),
-                        'ipu_per_unit': self._safe_cast(row.get('IPU Per Unit'), Decimal)
-                    }
-                    if not all([lookup_params['meter_id'], lookup_params['consumption_date'], lookup_params['org_id']]):
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
-                        continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'meter_name': self._clean_value(row.get('Meter Name')),
-                        'org_type': self._clean_value(row.get('Org Type')),
-                        'environment_type': self._clean_value(row.get('Environment Type')),
-                        'usage': self._safe_cast(row.get('Usage'), Decimal),
-                        'consumption_ipu': self._safe_cast(row.get('Consumption (IPUs)'), Decimal)
-                    }
-                    ConsumoAsset.objects.update_or_create(**lookup_params, defaults=defaults_params)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de ASSET populados com sucesso."))
-        except Exception as e:
-            self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Asset: {e}")
-            raise
-
-    @transaction.atomic
-    def load_cdi_job_csv(self, csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
-        self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCdiJobExecucao' com: {csv_path}")
-        
-        # Lógica de deleção
-        deletion_filter = {
-            'configuracao': config,
-            'start_time__gte': start_date_obj,
-            'end_time__lte': end_date_obj
-        }
-        self.stdout.write(f"{log_prefix}    - Query de deleção para ConsumoCdiJobExecucao: .delete(). O filtro é: {deletion_filter}")
-        deleted_count, _ = ConsumoCdiJobExecucao.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CDI JOB deletados.")
-        
-        try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'task_id': self._clean_value(row.get('Task ID')),
-                        'task_run_id': self._clean_value(row.get('Task Run ID')),
-                        'org_id': self._clean_value(row.get('Org ID')),
-                        'environment_id': self._clean_value(row.get('Environment ID')),
-                        'start_time': self._safe_cast(row.get('Start Time'), datetime),
-                        'end_time': self._safe_cast(row.get('End Time'), datetime)
-                    }
-                    if not all(lookup_params.values()):
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
-                        continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'meter_id_ref': meter_id,
-                        'task_name': self._clean_value(row.get('Task Name')),
-                        'task_object_name': self._clean_value(row.get('Task Object Name')),
-                        'task_type': self._clean_value(row.get('Task Type')),
-                        'project_name': self._clean_value(row.get('Project Name')),
-                        'folder_name': self._clean_value(row.get('Folder Name')),
-                        'environment_name': self._clean_value(row.get('Environment')),
-                        'cores_used': self._safe_cast(row.get('Cores Used'), Decimal),
-                        'status': self._clean_value(row.get('Status')),
-                        'metered_value_ipu': self._safe_cast(row.get('Metered Value'), Decimal),
-                        'audit_time': self._safe_cast(row.get('Audit Time'), datetime),
-                        'obm_task_time_seconds': self._safe_cast(row.get('OBM Task Time(s)'), int),
-                    }
-                    ConsumoCdiJobExecucao.objects.update_or_create(**lookup_params, defaults=defaults_params)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de JOB (CDI) para o meter {meter_id} populados com sucesso."))
-        except Exception as e:
-            self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CDI): {e}")
-            raise
-
-    @transaction.atomic
     def load_cai_asset_summary_csv(self, csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCaiAssetSumario' com: {csv_path}")
-
-        # Lógica de deleção
-        deletion_filter = {
+        delete_filter = {
             'configuracao': config,
             'execution_date__gte': start_date_obj,
             'execution_date__lte': end_date_obj
         }
-        self.stdout.write(f"{log_prefix}    - Query de deleção para ConsumoCaiAssetSumario: .delete(). O filtro é: {deletion_filter}")
-        deleted_count, _ = ConsumoCaiAssetSumario.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CAI ASSET SUMMARY deletados.")
-
         try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'org_id': self._clean_value(row.get('Org ID')),
-                        'executed_asset': self._clean_value(row.get('Executed asset')),
-                        'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
-                        'execution_env': self._clean_value(row.get('Execution env')),
-                        'status': self._clean_value(row.get('status')),
-                        'invoked_by': self._clean_value(row.get('Invoked by'))
-                    }
-                    if not all(lookup_params.values()):
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
-                        continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'execution_type': self._clean_value(row.get('Execution type')),
-                         'execution_count': self._safe_cast(row.get('Execution count'), int),
-                        'total_execution_time_hours': self._safe_cast(row.get('Total Execution time (in hours)'), Decimal),
-                        'avg_execution_time_seconds': self._safe_cast(row.get('Average Execution time (in seconds)'), Decimal)
-                    }
-                    ConsumoCaiAssetSumario.objects.update_or_create(**lookup_params, defaults=defaults_params)
+            with transaction.atomic():
+                deleted_count, _ = ConsumoCaiAssetSumario.objects.filter(**delete_filter).delete()
+                self.stdout.write(self.style.WARNING(f"{log_prefix}    - {deleted_count} registros antigos de CAI ASSET SUMMARY deletados."))
+
+                with open(csv_path, mode='r', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for i, row in enumerate(reader):
+                        lookup_params = {
+                            'configuracao': config,
+                            'org_id': self._clean_value(row.get('Org ID')),
+                            'executed_asset': self._clean_value(row.get('Executed asset')),
+                            'execution_date': self._safe_cast(row.get('Date (in UTC)'), datetime),
+                            'execution_env': self._clean_value(row.get('Execution env')),
+                            'status': self._clean_value(row.get('status')),
+                            'invoked_by': self._clean_value(row.get('Invoked by'))
+                        }
+                        update_values = {
+                            'meter_id': meter_id,
+                            'iics_customer_id': self._clean_value(row.get('IICS Customer ID')),
+                            'parent_org_id': self._clean_value(row.get('Parent Org ID')),
+                            'ipu': self._safe_cast(row.get('IPU'), float),
+                            'unit': self._clean_value(row.get('Unit')),
+                            'invoked_by': self._clean_value(row.get('Invoked by'))
+                        }
+                        
+                        try:
+                            obj, created = ConsumoCaiAssetSumario.objects.get_or_create(
+                                **lookup_params,
+                                defaults=update_values
+                            )
+                            if not created:
+                                for key, value in update_values.items():
+                                    setattr(obj, key, value)
+                                obj.save()
+                        except Exception as e:
+                            self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CAI): {e}")
+                            raise
             self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de JOB (CAI) para o meter {meter_id} populados com sucesso."))
         except Exception as e:
-            self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CAI): {e}")
-            raise
+            self.stderr.write(f"{log_prefix}    - Erro CRÍTICO ao popular dados: {e}")
 
-    def get_filtered_meters_from_csv(self, csv_path, log_prefix=""):
-        self.stdout.write(f"{log_prefix}    - Lendo meters do arquivo: {csv_path}")
-        allowed_meter_names = {
-            "Application Integration", "Application Integration with Advanced Serverless",
-            "Data Integration", "Data Integration with Advanced Serverless"
+    def load_cdi_job_execucao_csv(self, csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
+        self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCdiJobExecucao' com: {csv_path}")
+        delete_filter = {
+            'configuracao': config,
+            'start_time__gte': start_date_obj,
+            'end_time__lte': end_date_obj
         }
-        meters = {}
-        try:
-            with open(csv_path, mode='r', encoding='utf-8') as infile:
-                reader = csv.DictReader(infile)
-                for row in reader:
-                    meter_name = row.get('Meter Name')
-                    meter_id = row.get('Meter ID')
-                    if meter_name in allowed_meter_names and meter_id:
-                        meters[meter_id] = meter_name
-            self.stdout.write(f"{log_prefix}    - Encontrados {len(meters)} meters únicos após o filtro.")
-            return meters
-        except Exception as e:
-            self.stderr.write(f"{log_prefix}    - Erro ao ler meters do CSV: {e}")
-            return {}
-
-    def run_export_flow(self, api_client, start_date_str, end_date_str, config, file_paths, start_date_obj, end_date_obj, job_type=None, meter_id=None, file_prefix="", job_loader=None, log_prefix=""):
-        export_name = job_type or f"meterId_{meter_id}"
-        export_suffix = job_type or f"meterId_{meter_id}"
-        self.stdout.write(f"\n{log_prefix} --- Iniciando fluxo de exportação para: {export_name} ---")
-
-        job_id = None
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            try:
-                job_id = api_client.export_metering_data(start_date=start_date_str, end_date=end_date_str, job_type=job_type, meter_id=meter_id)
-                if job_id:
-                    ExtracaoLog.objects.create(configuracao=config, etapa="EXPORT_JOB", status="SUCCESS", detalhes=f"Job para '{export_name}' criado com sucesso. ID: {job_id}")
-                    break
-            except requests.exceptions.RequestException as e:
-                self.stderr.write(self.style.ERROR(f"{log_prefix} Tentativa {attempt} de {max_attempts} falhou ao criar job para '{export_name}': {e}"))
-                if attempt == max_attempts:
-                    ExtracaoLog.objects.create(configuracao=config, etapa="EXPORT_JOB", status="FAILED", detalhes=f"Falha ao criar job para '{export_name}' após {max_attempts} tentativas.", mensagem_erro=str(e), resposta_api=e.response.text if e.response else None)
-                    return None
-                time.sleep(10)
-
-        if job_id:
-            final_status = api_client.check_job_status(job_id)
-            ExtracaoLog.objects.create(configuracao=config, etapa="CHECK_STATUS", status=final_status, detalhes=f"Status final do job '{export_name}' (ID: {job_id}) foi {final_status}.")
-
-            if final_status == "SUCCESS":
-                try:
-                    download_filename = f"export_{export_name.lower().replace(' ', '_')}_{job_id}.zip"
-                    download_path = os.path.join(file_paths['downloads'], download_filename)
-                    zip_path = api_client.download_export_file(job_id, download_path)
-                    if zip_path:
-                        csv_path = self.unzip_file(zip_path, file_paths['arquivos'], export_suffix, file_prefix, log_prefix)
-                        if csv_path:
-                            execution_timestamp = timezone.now()
-                            if job_type == "SUMMARY": self.load_summary_csv(csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
-                            elif job_type == "PROJECT_FOLDER": self.load_project_folder_csv(csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
-                            elif job_type == "ASSET":
-                                self.load_asset_csv(csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
-                                return csv_path
-                            elif meter_id and job_loader:
-                                job_loader(csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
-                except Exception as e:
-                    self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao popular dados: {e}"))
-                    ExtracaoLog.objects.create(configuracao=config, etapa="LOAD_CSV", status="FAILED", detalhes=f"Falha ao carregar dados para '{export_name}'", mensagem_erro=str(e))
-        return None
-
-    def run_summary_asset_jobs_flow(self, api_client, start_date_str, end_date_str, config, file_paths, start_date_obj, end_date_obj, log_prefix):
-        self.run_export_flow(api_client, start_date_str, end_date_str, config, file_paths, start_date_obj, end_date_obj, job_type="SUMMARY", log_prefix=log_prefix)
-        asset_csv_path = self.run_export_flow(api_client, start_date_str, end_date_str, config, file_paths, start_date_obj, end_date_obj, job_type="ASSET", log_prefix=log_prefix)
-
-        if asset_csv_path and os.path.exists(asset_csv_path):
-            asset_basename = os.path.splitext(os.path.basename(asset_csv_path))[0]
-            asset_prefix = asset_basename.removesuffix('_ASSET') + '_'
-
-            cdi_meter_id = "a2nB20h1o0lc7k3P9xtWS8"
-            cai_meter_ids = {"bN6mes5n4GGciiMkuoDlCz", "3uIRkIV5Rt9lBbAPzeR5Kj"}
-
-            meters = self.get_filtered_meters_from_csv(asset_csv_path, log_prefix)
-
-            if not meters:
-                self.stdout.write(f"{log_prefix} Nenhum meter (CDI/CAI) encontrado no arquivo de Asset para processar.")
-            else:
-                self.stdout.write(f"\n{log_prefix} Iniciando extração detalhada para {len(meters)} meters encontrados...")
-                for meter_id, meter_name in meters.items():
-                    job_loader_func = None
-                    if meter_id == cdi_meter_id:
-                        job_loader_func = self.load_cdi_job_csv
-                    elif meter_id in cai_meter_ids:
-                        job_loader_func = self.load_cai_asset_summary_csv
-
-                    if job_loader_func:
-                        self.run_export_flow(
-                            api_client, start_date_str, end_date_str, config, file_paths,
-                            start_date_obj, end_date_obj,
-                            meter_id=meter_id, file_prefix=asset_prefix, job_loader=job_loader_func, log_prefix=log_prefix
-                        )
-                    else:
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}    - Meter ID {meter_id} ({meter_name}) não possui um loader definido. Pulando."))
-        else:
-            self.stderr.write(self.style.ERROR(f"{log_prefix} Arquivo de ASSET não foi gerado ou encontrado. Fluxo de jobs (CDI/CAI) não pode continuar."))
-            ExtracaoLog.objects.create(configuracao=config, etapa="EXPORT_JOB", status="FAILED", detalhes="Falha ao gerar ou localizar arquivo de ASSET.")
-
-    def processar_configuracao(self, config):
-        start_time = time.monotonic()
-        log_prefix = f"[{config.apelido_configuracao} | {config.cliente.nome_cliente}]"
-        self.stdout.write(f"\n>> Processando: {log_prefix}")
 
         try:
-            self._cleanup_config_files(config)
+            with transaction.atomic():
+                deleted_count, _ = ConsumoCdiJobExecucao.objects.filter(**delete_filter).delete()
+                self.stdout.write(self.style.WARNING(f"{log_prefix}    - {deleted_count} registros antigos de CDI JOB deletados."))
 
-            arquivos_dir, downloads_dir = self._get_config_specific_paths(config)
-            file_paths = {'arquivos': arquivos_dir, 'downloads': downloads_dir}
+                field_mapping = {
+                    'meter_id': 'Meter ID', 'iics_customer_id': 'IICS Customer ID', 'parent_org_id': 'Parent Org ID',
+                    'org_id': 'Org ID', 'job_name': 'Job Name', 'job_id': 'Job ID', 'job_type': 'Job Type',
+                    'start_time': 'Start Time (in UTC)', 'end_time': 'End Time (in UTC)',
+                    'source_rows': 'Source Rows', 'target_rows': 'Target Rows', 'error_rows': 'Error Rows'
+                }
 
-            api_client = InformaticaAPIClient(config.iics_pod_url, config.iics_username, config.iics_password, self, log_prefix)
-            if not api_client.login():
-                return
-
-            ExtracaoLog.objects.create(configuracao=config, etapa="LOGIN", status="SUCCESS")
-
-            if config.ultima_extracao_enddate:
-                start_date_obj = config.ultima_extracao_enddate
-            else:
-                start_date_obj = timezone.now() - timedelta(days=30)
-
-            end_date_obj_for_api = timezone.now()
-            end_date_to_save = timezone.localtime(end_date_obj_for_api).replace(hour=0, minute=0, second=0, microsecond=0)
-
-            start_date_str = start_date_obj.strftime("%Y-%m-%dT00:00:00Z")
-            end_date_str = end_date_obj_for_api.strftime("%Y-%m-%dT23:59:59Z")
-            self.stdout.write(f"{log_prefix} Período de extração: {start_date_str} a {end_date_str}")
+                with open(csv_path, mode='r', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    batch = []
+                    for row in reader:
+                        instance_data = {'configuracao': config}
+                        for model_field, csv_header in field_mapping.items():
+                            raw_value = row.get(csv_header)
+                            if model_field in ['start_time', 'end_time']:
+                                instance_data[model_field] = self._safe_cast(raw_value, datetime)
+                            elif model_field in ['source_rows', 'target_rows', 'error_rows']:
+                                instance_data[model_field] = self._safe_cast(raw_value, int)
+                            else:
+                                instance_data[model_field] = self._clean_value(raw_value)
+                        batch.append(ConsumoCdiJobExecucao(**instance_data))
+                    
+                    ConsumoCdiJobExecucao.objects.bulk_create(batch)
             
-            # Ajustando as datas para o filtro de deleção para garantir que cobrem o dia inteiro em UTC
-            start_date_for_filter = start_date_obj.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date_for_filter = end_date_obj_for_api.astimezone(timezone.utc).replace(hour=23, minute=59, second=59, microsecond=999999)
-
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"{log_prefix}_sub") as sub_executor:
-                future_asset_chain = sub_executor.submit(self.run_summary_asset_jobs_flow, api_client, start_date_str, end_date_str, config, file_paths, start_date_for_filter, end_date_for_filter, log_prefix)
-                future_project = sub_executor.submit(self.run_export_flow, api_client, start_date_str, end_date_str, config, file_paths, start_date_for_filter, end_date_for_filter, job_type="PROJECT_FOLDER", log_prefix=log_prefix)
-
-                future_asset_chain.result()
-                future_project.result()
-
-            config.ultima_extracao_enddate = end_date_to_save
-            config.save()
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix} Marcador 'ultima_extracao_enddate' atualizado para {end_date_to_save}"))
-
+            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Dados de JOB (CDI) para o meter {meter_id} populados com sucesso."))
         except Exception as e:
-            self.stderr.write(self.style.ERROR(f"{log_prefix} Ocorreu um erro inesperado durante o fluxo: {e}"))
-            ExtracaoLog.objects.create(configuracao=config, etapa="FLUXO_GERAL", status="FAILED", mensagem_erro=str(e))
-        finally:
-            end_time = time.monotonic()
-            duration = timedelta(seconds=end_time - start_time)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix} Processo concluído em {duration}"))
-            connection.close()
+            self.stderr.write(f"{log_prefix}    - Erro CRÍTICO ao popular dados: {e}")
 
-    def handle(self, *args, **options):
-        self.stdout.write(self.style.SUCCESS("==== INICIANDO ROTINA DE EXTRAÇÃO DE CONSUMO IICS ===="))
+    # --- MÉTODOS DE CONTROLE DE FLUXO E API ---
+    def get_extraction_dates(self, config):
+        try:
+            marcador = MarcadorExtracao.objects.get(configuracao=config)
+            start_date = marcador.ultima_extracao_enddate.strftime('%Y-%m-%dT00:00:00Z')
+        except MarcadorExtracao.DoesNotExist:
+            start_date = (datetime.now() - timedelta(days=config.dias_iniciais)).strftime('%Y-%m-%dT00:00:00Z')
+        
+        end_date = (datetime.now() + timedelta(days=config.dias_a_frente)).strftime('%Y-%m-%dT23:59:59Z')
+        return start_date, end_date
+    
+    def run_export_flow(self, config, export_type, start_date, end_date, log_prefix=""):
+        self.stdout.write(f"\n{log_prefix}--- Iniciando fluxo de exportação para: {export_type} ---")
+        session_id = get_session_id(config, log_prefix)
+        if not session_id:
+            return None
 
-        configs_para_processar = list(ConfiguracaoIDMC.objects.filter(ativo=True))
+        job_id = self.create_export_job(session_id, config, export_type, start_date, end_date, log_prefix)
+        if not job_id:
+            return None
 
-        if not configs_para_processar:
-            self.stdout.write(self.style.WARNING("Nenhuma configuração ativa encontrada no banco de dados. Saindo."))
+        job_status = self.wait_for_job_completion(session_id, config, job_id, log_prefix)
+        if job_status != 'SUCCESS':
+            return None
+
+        downloaded_file = self.download_export_file(session_id, config, job_id, export_type, log_prefix)
+        if not downloaded_file:
+            return None
+
+        file_prefix = f"{config.org_id}_"
+        extract_to_dir = os.path.join('/app/arquivos', config.cliente.lower(), config.slug)
+        csv_path = self.unzip_file(downloaded_file, extract_to_dir, export_type, file_prefix, log_prefix)
+        
+        if csv_path:
+            self.process_csv_data(csv_path, config, export_type, start_date, end_date, log_prefix)
+            self.stdout.write(f"{log_prefix}    - Processamento do arquivo {export_type} concluído.")
+        
+        return csv_path
+
+    def run_meter_export_flow(self, config, meter_id, start_date, end_date, log_prefix=""):
+        self.stdout.write(f"\n{log_prefix}--- Iniciando fluxo de exportação para: meterId_{meter_id} ---")
+        session_id = get_session_id(config, log_prefix)
+        if not session_id:
             return
 
-        MAX_WORKERS = 5
+        job_id = self.create_export_job(session_id, config, 'METER_DETAIL', start_date, end_date, log_prefix, meter_id=meter_id)
+        if not job_id:
+            return
 
-        self.stdout.write(f"Encontradas {len(configs_para_processar)} configurações para processar. Iniciando com até {MAX_WORKERS} workers paralelos.")
+        job_status = self.wait_for_job_completion(session_id, config, job_id, log_prefix)
+        if job_status != 'SUCCESS':
+            return
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            executor.map(self.processar_configuracao, configs_para_processar)
+        downloaded_file = self.download_export_file(session_id, config, job_id, 'METER_DETAIL', log_prefix, meter_id=meter_id)
+        if not downloaded_file:
+            return
+        
+        file_prefix = f"{config.org_id}_"
+        extract_to_dir = os.path.join('/app/arquivos', config.cliente.lower(), config.slug)
+        csv_path = self.unzip_file(downloaded_file, extract_to_dir, f"DetailedReport_meterId_{meter_id}", file_prefix, log_prefix)
 
-        self.stdout.write(self.style.SUCCESS("\n==== ROTINA DE EXTRAÇÃO FINALIZADA ===="))
+        if csv_path:
+            start_date_obj = self._safe_cast(start_date, datetime)
+            end_date_obj = self._safe_cast(end_date, datetime)
+            execution_timestamp = datetime.now()
+            
+            if "CDIMeteringAuditData" in os.path.basename(csv_path):
+                self.load_cdi_job_execucao_csv(csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
+            else:
+                self.load_cai_asset_summary_csv(csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix)
+
+    def create_export_job(self, session_id, config, export_type, start_date, end_date, log_prefix, meter_id=None):
+        self.stdout.write(f"{log_prefix}2. Criando job de exportação para tipo '{export_type if export_type != 'METER_DETAIL' else f'meterId_{meter_id}'}'...")
+        url = f"{config.base_url}/saas/public/core/v3/export"
+        payload = {
+            "name": f"Export_{export_type}_{config.org_id}",
+            "format": "CSV",
+            "timePeriod": {
+                "startDate": start_date,
+                "endDate": end_date
+            }
+        }
+        if export_type == 'METER_DETAIL':
+            payload["filters"] = {"meterId": meter_id}
+            payload["type"] = "METERING_DATA_DETAIL"
+        else:
+            payload["type"] = export_type
+
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "IDS-SESSION-ID": session_id}
+        
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            job_id = response.json().get("jobId")
+            self.stdout.write(f"{log_prefix}Job de exportação criado. JobId: {job_id}")
+            return job_id
+        except requests.exceptions.RequestException as e:
+            self.stderr.write(f"{log_prefix}Erro ao criar job de exportação: {e.text}")
+            return None
+
+    def wait_for_job_completion(self, session_id, config, job_id, log_prefix):
+        self.stdout.write(f"{log_prefix}3. Verificando status do JobId {job_id}...")
+        url = f"{config.base_url}/saas/public/core/v3/export/{job_id}"
+        headers = {"Accept": "application/json", "IDS-SESSION-ID": session_id}
+        
+        while True:
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                status = response.json().get("status")
+                self.stdout.write(f"{log_prefix}    - Status atual: {status}")
+                if status in ['SUCCESS', 'FAILED', 'WARNING']:
+                    if status == 'SUCCESS':
+                        self.stdout.write(self.style.SUCCESS(f"{log_prefix}Job concluído com sucesso!"))
+                    else:
+                        self.stderr.write(f"{log_prefix}Job concluído com status: {status}")
+                    return status
+                time.sleep(10)
+            except requests.exceptions.RequestException as e:
+                self.stderr.write(f"{log_prefix}Erro ao verificar status do job: {e}")
+                return 'FAILED'
+
+    def download_export_file(self, session_id, config, job_id, export_type, log_prefix, meter_id=None):
+        self.stdout.write(f"{log_prefix}4. Realizando download do arquivo para o JobId {job_id}...")
+        url = f"{config.base_url}/saas/public/core/v3/export/{job_id}/download"
+        headers = {"Accept": "application/zip", "IDS-SESSION-ID": session_id}
+        
+        download_dir = os.path.join('/app/downloads', config.cliente.lower(), config.slug)
+        os.makedirs(download_dir, exist_ok=True)
+        
+        filename_part = f"meterid_{meter_id.lower()}" if meter_id else export_type.lower()
+        file_path = os.path.join(download_dir, f"export_{filename_part}_{job_id}.zip")
+
+        try:
+            with requests.get(url, headers=headers, stream=True) as r:
+                r.raise_for_status()
+                with open(file_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            self.stdout.write(self.style.SUCCESS(f"{log_prefix}Download concluído: {file_path}"))
+            return file_path
+        except requests.exceptions.RequestException as e:
+            self.stderr.write(f"{log_prefix}Erro ao baixar o arquivo: {e}")
+            return None
+
+    def process_csv_data(self, csv_path, config, export_type, start_date, end_date, log_prefix):
+        start_date_obj = self._safe_cast(start_date, datetime)
+        end_date_obj = self._safe_cast(end_date, datetime)
+        
+        model_map = {
+            'SUMMARY': (ConsumoSummary, {
+                'consumption_date': 'Consumption Date (in UTC)', 'org_id': 'Org ID', 'org_name': 'Org Name',
+                'service': 'Service', 'sub_service': 'Sub-Service', 'ipu': 'IPU', 'unit': 'Unit'
+            }, ['consumption_date', 'consumption_date']),
+            'PROJECT_FOLDER': (ConsumoProjectFolder, {
+                'consumption_date': 'Consumption Date (in UTC)', 'org_id': 'Org ID', 'org_name': 'Org Name',
+                'project_folder_name': 'Project/Folder Name', 'service': 'Service', 'sub_service': 'Sub-Service',
+                'ipu': 'IPU', 'unit': 'Unit'
+            }, ['consumption_date', 'consumption_date']),
+            'ASSET': (ConsumoAsset, {
+                'consumption_date': 'Consumption Date (in UTC)', 'org_id': 'Org ID', 'org_name': 'Org Name',
+                'asset_name': 'Asset Name', 'asset_id': 'Asset ID', 'asset_type': 'Asset Type',
+                'service': 'Service', 'sub_service': 'Sub-Service', 'ipu': 'IPU', 'unit': 'Unit'
+            }, ['consumption_date', 'consumption_date'])
+        }
+
+        if export_type in model_map:
+            model_class, field_mapping, date_fields = model_map[export_type]
+            self.load_generic_csv(csv_path, model_class, field_mapping, config, start_date_obj, end_date_obj, date_fields, log_prefix)
+        else:
+            self.stderr.write(f"{log_prefix}Tipo de exportação '{export_type}' não mapeado para processamento de CSV.")
+
+    def _process_chunk(self, config, chunk_start_date, chunk_end_date, log_prefix):
+        """
+        Processa um único período de datas (chunk) para uma configuração.
+        """
+        self.stdout.write(f"\n{log_prefix}--- Processando período de {chunk_start_date.strftime('%Y-%m-%d')} a {chunk_end_date.strftime('%Y-%m-%d')} ---")
+
+        start_date_str = chunk_start_date.strftime('%Y-%m-%dT00:00:00Z')
+        end_date_str = chunk_end_date.strftime('%Y-%m-%dT23:59:59Z')
+
+        # --- FLUXO DE EXPORTAÇÃO SEQUENCIAL ---
+        self.run_export_flow(config, 'SUMMARY', start_date_str, end_date_str, log_prefix)
+        self.run_export_flow(config, 'PROJECT_FOLDER', start_date_str, end_date_str, log_prefix)
+        asset_csv_path = self.run_export_flow(config, 'ASSET', start_date_str, end_date_str, log_prefix)
+        
+        if asset_csv_path:
+            self.stdout.write(f"{log_prefix}    - Lendo meters do arquivo: {asset_csv_path}")
+            try:
+                df = pd.read_csv(asset_csv_path)
+                df_filtered = df[df['Sub-Service'].str.contains('CAI|CDI', na=False)]
+                unique_meters = df_filtered['Meter ID'].unique().tolist()
+                self.stdout.write(f"{log_prefix}    - Encontrados {len(unique_meters)} meters únicos após o filtro.")
+                
+                if unique_meters:
+                    self.stdout.write(f"\n{log_prefix}Iniciando extração detalhada para {len(unique_meters)} meters encontrados...")
+                    for meter_id in unique_meters:
+                        self.run_meter_export_flow(config, meter_id, start_date_str, end_date_str, log_prefix)
+                else:
+                    self.stdout.write(f"{log_prefix}    - Nenhum meter novo encontrado para extração detalhada.")
+
+            except Exception as e:
+                self.stderr.write(f"{log_prefix}    - Erro ao ler o arquivo de assets ou extrair meters: {e}")
+
+    def process_configuration(self, config):
+        start_time = time.time()
+        log_prefix = f"[{config.name} | {config.cliente}] "
+        self.stdout.write(f"\n>> Processando: [{config.name} | {config.cliente}]")
+
+        self.clean_old_files(config, log_prefix)
+        
+        overall_start_date_str, overall_end_date_str = self.get_extraction_dates(config)
+        self.stdout.write(f"{log_prefix}Período de extração total: {overall_start_date_str} a {overall_end_date_str}")
+
+        overall_start_date = datetime.strptime(overall_start_date_str, '%Y-%m-%dT%H:%M:%SZ')
+        overall_end_date = datetime.strptime(overall_end_date_str, '%Y-%m-%dT%H:%M:%SZ')
+
+        current_start_date = overall_start_date
+        while current_start_date <= overall_end_date:
+            chunk_end_date = current_start_date + timedelta(days=29)
+            if chunk_end_date > overall_end_date:
+                chunk_end_date = overall_end_date
+
+            self._process_chunk(config, current_start_date, chunk_end_date, log_prefix)
+            
+            current_start_date += timedelta(days=30)
+
+        # --- ATUALIZAÇÃO DO MARCADOR ---
+        marcador, _ = MarcadorExtracao.objects.get_or_create(configuracao=config)
+        # O próximo início será 1 dia após o fim do período total que acabamos de processar
+        marcador.ultima_extracao_enddate = overall_end_date.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        marcador.save()
+        self.stdout.write(self.style.SUCCESS(f"{log_prefix}Marcador 'ultima_extracao_enddate' atualizado para {marcador.ultima_extracao_enddate.strftime('%Y-%m-%d')}"))
+        
+        end_time = time.time()
+        self.stdout.write(f"{log_prefix}Processo concluído em {timedelta(seconds=end_time - start_time)}")
+        
+    def handle(self, *args, **options):
+        self.stdout.write("==== INICIANDO ROTINA DE EXTRAÇÃO DE CONSUMO IICS ====")
+        configurations = list(ConfiguracaoIDMC.objects.filter(ativo=True))
+        
+        if not configurations:
+            self.stdout.write("Nenhuma configuração ativa encontrada para processar.")
+            return
+            
+        self.stdout.write(f"Encontradas {len(configurations)} configurações para processar. Iniciando de forma sequencial.")
+
+        for config in configurations:
+            try:
+                self.process_configuration(config)
+            except Exception as e:
+                import traceback
+                self.stderr.write(f"Erro CRÍTICO no processamento da configuração '{config.name}': {e}\n{traceback.format_exc()}")
+
+        self.stdout.write("\n==== ROTINA DE EXTRAÇÃO FINALIZADA ====")
