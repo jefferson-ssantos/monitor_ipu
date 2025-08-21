@@ -122,6 +122,7 @@ class ConsumoCdiJobExecucao(models.Model):
     metered_value_ipu = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     audit_time = models.DateTimeField(null=True, blank=True)
     obm_task_time_seconds = models.IntegerField(null=True, blank=True)
+    meter_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
 
     class Meta:
         db_table = 'api_consumocdijobexecucao'
@@ -142,6 +143,7 @@ class ConsumoCaiAssetSumario(models.Model):
     execution_count = models.BigIntegerField(null=True, blank=True)
     total_execution_time_hours = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     avg_execution_time_seconds = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    meter_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
 
     class Meta:
         db_table = 'api_consumocaiassetsumario'
@@ -165,22 +167,21 @@ class ExtracaoLog(models.Model):
         verbose_name_plural = "Logs de Extração"
         ordering = ['-timestamp']
 
-class MarcadorExtracao(models.Model):
-    configuracao = models.OneToOneField(
-        ConfiguracaoIDMC,
-        on_delete=models.CASCADE,
-        primary_key=True,
-        verbose_name="Configuração"
-    )
-    ultima_extracao_enddate = models.DateTimeField(
-        default=timezone.now,
-        verbose_name="Data Final da Última Extração"
-    )
+class CicloFaturamento(models.Model):
+    configuracao = models.ForeignKey(ConfiguracaoIDMC, on_delete=models.CASCADE, related_name='ciclos_faturamento')
+    ciclo_id = models.IntegerField()
+    billing_period_start_date = models.DateField()
+    billing_period_end_date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'api_marcadorextracao'
-        verbose_name = "Marcador de Extração"
-        verbose_name_plural = "Marcadores de Extração"
+        verbose_name = "Ciclo de Faturamento"
+        verbose_name_plural = "Ciclos de Faturamento"
+        unique_together = (('configuracao', 'ciclo_id'), ('configuracao', 'billing_period_start_date', 'billing_period_end_date'))
+        ordering = ['configuracao', 'billing_period_start_date']
 
     def __str__(self):
-        return f"Marcador para {self.configuracao.name}"
+        return f"{self.configuracao.apelido_configuracao} - Ciclo {self.ciclo_id} ({self.billing_period_start_date} a {self.billing_period_end_date})"
+
+
