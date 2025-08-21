@@ -223,8 +223,9 @@ class Command(BaseCommand):
         delete_query_log = f"""DELETE FROM "public"."api_consumosummary" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
         self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoSummary.objects.filter(**deletion_filter).delete()
+        deleted_count, deleted_details = ConsumoSummary.objects.filter(**deletion_filter).delete()
         self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de SUMMARY deletados.")
+        self.stdout.write(f"{log_prefix}    - Detalhes da deleção: {deleted_details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -266,8 +267,9 @@ class Command(BaseCommand):
         delete_query_log = f"""DELETE FROM "public"."api_consumoprojectfolder" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
         self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoProjectFolder.objects.filter(**deletion_filter).delete()
+        deleted_count, deleted_details = ConsumoProjectFolder.objects.filter(**deletion_filter).delete()
         self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de PROJECT_FOLDER deletados.")
+        self.stdout.write(f"{log_prefix}    - Detalhes da deleção: {deleted_details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -302,8 +304,9 @@ class Command(BaseCommand):
         delete_query_log = f"""DELETE FROM "public"."api_consumoasset" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
         self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoAsset.objects.filter(**deletion_filter).delete()
+        deleted_count, deleted_details = ConsumoAsset.objects.filter(**deletion_filter).delete()
         self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de ASSET deletados.")
+        self.stdout.write(f"{log_prefix}    - Detalhes da deleção: {deleted_details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -339,8 +342,9 @@ class Command(BaseCommand):
         delete_query_log = f"""DELETE FROM "public"."api_consumocdijobexecucao" WHERE "configuracao_id" = {config.id} AND "start_time" >= '{start_date_obj.isoformat()}' AND "end_time" <= '{end_date_obj.isoformat()}' AND "meter_id" = '{meter_id}';"""
         self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoCdiJobExecucao.objects.filter(**deletion_filter).delete()
+        deleted_count, deleted_details = ConsumoCdiJobExecucao.objects.filter(**deletion_filter).delete()
         self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CDI JOB deletados.")
+        self.stdout.write(f"{log_prefix}    - Detalhes da deleção: {deleted_details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -379,8 +383,9 @@ class Command(BaseCommand):
         delete_query_log = f"""DELETE FROM "public"."api_consumocaiassetsumario" WHERE "configuracao_id" = {config.id} AND "execution_date" >= '{start_date_obj.isoformat()}' AND "execution_date" <= '{end_date_obj.isoformat()}' AND "meter_id" = '{meter_id}';"""
         self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoCaiAssetSumario.objects.filter(**deletion_filter).delete()
+        deleted_count, deleted_details = ConsumoCaiAssetSumario.objects.filter(**deletion_filter).delete()
         self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CAI ASSET SUMMARY deletados.")
+        self.stdout.write(f"{log_prefix}    - Detalhes da deleção: {deleted_details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
