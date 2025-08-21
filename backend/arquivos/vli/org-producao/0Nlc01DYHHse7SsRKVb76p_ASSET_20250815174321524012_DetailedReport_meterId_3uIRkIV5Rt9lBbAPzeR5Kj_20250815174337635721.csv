@@ -1,5 +1,0 @@
-Org ID,Execution type,Executed asset,Date (in UTC),Invoked by,Execution env,status,Execution count,Total Execution time (in hours),Average Execution time (in seconds)
-0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_GRANULAR,2025-08-15,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,126,0.0049125000,0.14036
-0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_GESTAO,2025-08-15,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,116,0.0045311111,0.14062
-0Nlc01DYHHse7SsRKVb76p,Process,mp_MENSAGERIA_SEGMENTACAO,2025-08-15,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,116,0.0044058333,0.13673
-0Nlc01DYHHse7SsRKVb76p,Process,mp_Security_Logs_2_TB_CMDB,2025-08-15,Scheduler,01CR7T08000000000002_VLI_Logistica_PRD,Completed,1,0.0155230556,55.88300

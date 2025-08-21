@@ -1,5 +1,0 @@
-Org ID,Execution type,Executed asset,Date (in UTC),Invoked by,Execution env,status,Execution count,Total Execution time (in hours),Average Execution time (in seconds)
-4xiVO2awWKCdQC52Ap0tYk,Process,API_VLI_EXT,2025-07-15,REST,Cloud,Completed,1,0.0001469444,0.52900
-4xiVO2awWKCdQC52Ap0tYk,Process,API_VLI_EXT,2025-07-17,REST,Cloud,Completed,2,0.0002752778,0.49550
-4xiVO2awWKCdQC52Ap0tYk,Process,p_WS_CONSULTA_CEP,2025-07-30,REST,Cloud,Completed,72,0.0169891667,0.84946
-4xiVO2awWKCdQC52Ap0tYk,Process,p_WS_CONSULTA_CEP,2025-08-01,REST,Cloud,Completed,21,0.0036052778,0.61805
