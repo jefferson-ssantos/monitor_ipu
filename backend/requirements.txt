@@ -5,3 +5,6 @@ requests
 python-dotenv
 python-dateutil
 pandas==2.2.2
+gunicorn
+dj-database-url
+whitenoise

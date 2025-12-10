@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* FinData Design System - Paleta Orys (Corrigida) */
+@layer base {
+  :root {
+    /* Cores baseadas nos HEX codes fornecidos */
+    --background: 220 13% 95%; /* #F3F4F6 */
+    --foreground: 227 53% 34%; /* #283a86 */
+
+    --card: 0 0% 100%; /* #FFFFFF */
+    --card-foreground: 227 53% 34%; /* #283a86 */
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 27%;
+
+    /* Primária: Azul Escuro Orys */
+    --primary: 227 53% 34%; /* #283a86 */
+    --primary-foreground: 0 0% 98%; /* Branco para contraste */
+    --primary-dark: 227 53% 29%; /* Tom mais escuro para hover */
+
+    /* Secundária / Destaque: Laranja Orys */
+    --secondary: 23 90% 54%; /* #f36f21 */
+    --secondary-foreground: 0 0% 98%; /* Branco para contraste */
+
+    /* Muted */
+    --muted: 220 13% 95%;
+    --muted-foreground: 215 9% 47%; /* #6B7280 */
+
+    --accent: 23 90% 54%; /* #f36f21 */
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 84% 55%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 13% 88%; /* Tom de cinza um pouco mais escuro que o fundo */
+    --input: 220 13% 88%;
+    --ring: 23 90% 54%; /* Laranja para anel de foco */
+
+    --radius: 0.75rem;
+
+    /* Cores de KPI Financeiro - Paleta Ajustada */
+    --cost-high: 0 84% 55%; /* Vermelho para custo alto */
+    --cost-medium: 39 100% 50%; /* Laranja/Amarelo para alerta */
+    --cost-low: 145 63% 49%; /* Verde para custo baixo */
+    --success: 145 63% 49%; /* Verde para sucesso */
+    --neutral: 215 9% 47%;
+
+    /* Gradientes */
+    --gradient-primary: linear-gradient(135deg, hsl(var(--primary)), hsl(227, 53%, 44%));
+    --gradient-cost: linear-gradient(135deg, hsl(var(--cost-high)), hsl(var(--cost-medium)));
+    --gradient-success: linear-gradient(135deg, hsl(var(--success)), hsl(145, 63%, 59%));
+    --gradient-card: linear-gradient(145deg, hsl(var(--card)), hsl(var(--muted)));
+
+    /* Sombras */
+    --shadow-soft: 0 1px 3px hsla(220, 25%, 27%, 0.12), 0 1px 2px hsla(220, 25%, 27%, 0.24);
+    --shadow-medium: 0 4px 6px hsla(220, 25%, 27%, 0.07), 0 2px 4px hsla(220, 25%, 27%, 0.06);
+    --shadow-strong: 0 10px 15px hsla(220, 25%, 27%, 0.1), 0 4px 6px hsla(220, 25%, 27%, 0.05);
+    --shadow-glow: 0 0 20px hsla(220, 33%, 25%, 0.15);
+
+    /* Tipografia */
+    --font-heading: 'Inter', system-ui, sans-serif;
+    --font-body: 'Inter', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 215 25% 27%;
+    --sidebar-primary: 220 33% 25%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 220 13% 95%;
+    --sidebar-accent-foreground: 215 25% 27%;
+    --sidebar-border: 220 13% 88%;
+    --sidebar-ring: 25 95% 53%;
+  }
+
+  .dark {
+    --background: 215 25% 15%;
+    --foreground: 220 13% 95%;
+    --card: 215 25% 20%;
+    --card-foreground: 220 13% 95%;
+    --popover: 215 25% 15%;
+    --popover-foreground: 220 13% 95%;
+    --primary: 220 13% 85%;
+    --primary-foreground: 215 25% 10%;
+    --secondary: 23 90% 54%;
+    --secondary-foreground: 0 0% 10%;
+    --muted: 215 25% 25%;
+    --muted-foreground: 215 9% 55%;
+    --accent: 23 90% 54%;
+    --accent-foreground: 0 0% 10%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 215 25% 30%;
+    --input: 215 25% 30%;
+    --ring: 23 90% 54%;
+    --sidebar-background: 215 25% 20%;
+    --sidebar-foreground: 220 13% 95%;
+    --sidebar-primary: 25 95% 53%;
+    --sidebar-primary-foreground: 0 0% 10%;
+    --sidebar-accent: 215 25% 25%;
+    --sidebar-accent-foreground: 220 13% 95%;
+    --sidebar-border: 215 25% 30%;
+    --sidebar-ring: 25 95% 53%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

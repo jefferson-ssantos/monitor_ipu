@@ -6,7 +6,7 @@ from django.utils import timezone
 class Clientes(models.Model):
     nome_cliente = models.CharField(max_length=255)
     email_contato = models.EmailField(unique=True)
-    qnt_ipus_contratadas  = models.DecimalField(max_digits=10, decimal_places=4)
+    qtd_ipus_contratadas  = models.DecimalField(max_digits=10, decimal_places=4)
     preco_por_ipu = models.DecimalField(max_digits=10, decimal_places=4)
     ativo = models.BooleanField(default=True)
     data_criacao = models.DateTimeField(auto_now_add=True)

@@ -1,0 +1,10 @@
+Meter ID,Meter Name,Date,Asset Name,Asset Type,Project,Folder,Org ID,Org Type,Environment Name,Environment Type,Tier,IPU Per Unit,Usage,Consumption (IPUs)
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-12-09T00:00:00Z,mt_REGISTRA_ARQUIVO_CLOSEUP,MCT,CLOSE-UP,DEMO,4xiVO2awWKCdQC52Ap0tYk,Production,srvorys,Secure Agent Group,0.000 - 2000.000,0.160000,0.496688000000,0.079470080000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-12-09T00:00:00Z,mt_TB_CONSULTORES_FATURAVEIS,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,0.016947000000,0.002711520000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-12-09T00:00:00Z,mt_CARGA_ARTIA,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,1.404167000000,0.224666720000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-12-08T00:00:00Z,mt_TB_CONSULTORES_FATURAVEIS,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,0.016947000000,0.002711520000
+a2nB20h1o0lc7k3P9xtWS8,Data Integration,2025-12-08T00:00:00Z,mt_CARGA_ARTIA,MCT,ORYS,null,4xiVO2awWKCdQC52Ap0tYk,Production,Informatica Cloud Hosted Agent,Cloud Hosted,0.000 - 2000.000,0.160000,1.410278000000,0.225644480000
+3sY0I8UHjyTiXcLzZI1fqj,Governance Records,2025-12-10T00:00:00Z,null,null,null,null,4xiVO2awWKCdQC52Ap0tYk,Production,environmentId,Cloud Hosted Service,0.000 - 40000.000,9.500000,2.000000000000,0.001900000000
+3sY0I8UHjyTiXcLzZI1fqj,Governance Records,2025-12-09T00:00:00Z,null,null,null,null,4xiVO2awWKCdQC52Ap0tYk,Production,environmentId,Cloud Hosted Service,0.000 - 40000.000,9.500000,2.000000000000,0.001900000000
+3sY0I8UHjyTiXcLzZI1fqj,Governance Records,2025-12-08T00:00:00Z,null,null,null,null,4xiVO2awWKCdQC52Ap0tYk,Production,environmentId,Cloud Hosted Service,0.000 - 40000.000,9.500000,2.000000000000,0.001900000000
+3e7ccb904b3011eebe5602,Taskflow Run,2025-12-09T00:00:00Z,null,null,null,null,4xiVO2awWKCdQC52Ap0tYk,Production,_Cloud_,Serverless,0.000 +,0.000000,46.000000000000,0.000000000000
