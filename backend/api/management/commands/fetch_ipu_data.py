@@ -148,7 +148,6 @@ class Command(BaseCommand):
         if value is None or value.lower() == 'null' or value.strip() == '':
             return None
         return value
-
     def _safe_cast(self, value, cast_type, default=None):
         cleaned_value = self._clean_value(value)
         if cleaned_value is None:
@@ -162,11 +161,16 @@ class Command(BaseCommand):
             if cast_type == datetime:
                 dt_obj = date_parser.parse(cleaned_value)
                 if timezone.is_naive(dt_obj):
-                    dt_obj = timezone.make_aware(dt_obj, self.SAO_PAULO_TZ)
-                return dt_obj.astimezone(timezone.utc) # Sempre armazena em UTC no banco
+                    # Force UTC directly
+                    dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                else:
+                    # Convert input aware date to UTC explicitly
+                    dt_obj = dt_obj.astimezone(timezone.utc)
+                return dt_obj
             return cast_type(cleaned_value)
         except (ValueError, TypeError, InvalidOperation, date_parser.ParserError):
             return default
+
 
     def _get_config_specific_paths(self, config):
         safe_client_name = slugify(config.cliente.nome_cliente)
@@ -220,54 +224,93 @@ class Command(BaseCommand):
         deletion_filter = {'configuracao': config, 'consumption_date__gte': start_date_obj, 'consumption_date__lte': end_date_obj}
 
         # Monta a query de deleção para fins de log
-        delete_query_log = f"""DELETE FROM "public"."api_consumosummary" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
-        self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
+        delete_query_log = f"""DELETE FROM "public"."api_consumosummary" WHERE "configuracao_id" = {config.id} AND CAST("consumption_date" AS DATE) >= '{start_date_obj.date().isoformat()}' AND CAST("consumption_date" AS DATE) <= '{end_date_obj.date().isoformat()}';"""
+        self.stdout.write(f"{log_prefix}    - Lógica de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoSummary.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de SUMMARY deletados.")
+        deleted_count, details = ConsumoSummary.objects.filter(**deletion_filter).delete()
+        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de SUMMARY deletados. Detalhes: {details}")
+        
+        # Dicionário para agregar duplicatas (mesmo Org, Meter, Data)
+        aggregated_data = {}
+
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
                 for i, row in enumerate(reader):
-                    lookup_params = {
-                        'configuracao': config,
-                        'org_id': self._clean_value(row.get('OrgId')),
-                        'meter_id': self._clean_value(row.get('MeterId')),
-                        'consumption_date': self._safe_cast(row.get('Date'), datetime)
-                    }
-                    if not all(lookup_params.values()):
-                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
+                    org_id = self._clean_value(row.get('OrgId'))
+                    meter_id = self._clean_value(row.get('MeterId'))
+                    consumption_date = self._safe_cast(row.get('Date'), datetime)
+
+                    if not all([org_id, meter_id, consumption_date]):
+                        self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos."))
                         continue
-                    defaults_params = {
-                        'data_extracao': execution_timestamp,
-                        'meter_name': self._clean_value(row.get('MeterName')),
-                        'billing_period_start_date': self._safe_cast(row.get('BillingPeriodStartDate'), datetime),
-                        'billing_period_end_date': self._safe_cast(row.get('BillingPeriodEndDate'), datetime),
-                        'meter_usage': self._safe_cast(row.get('MeterUsage'), Decimal),
-                        'consumption_ipu': self._safe_cast(row.get('IPU'), Decimal),
-                        'scalar': self._clean_value(row.get('Scalar')),
-                        'metric_category': self._clean_value(row.get('MetricCategory')),
-                        'org_name': self._clean_value(row.get('OrgName')),
-                        'org_type': self._clean_value(row.get('OrgType')),
-                        'ipu_rate': self._safe_cast(row.get('IPURate'), Decimal),
-                    }
-                    ConsumoSummary.objects.update_or_create(**lookup_params, defaults=defaults_params)
-            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo SUMMARY concluído."))
+
+                    # Validate date range
+                    if not (start_date_obj.date() <= consumption_date.date() <= end_date_obj.date()):
+                        continue
+
+                    key = (org_id, meter_id, consumption_date)
+                    
+                    meter_usage = self._safe_cast(row.get('MeterUsage'), Decimal) or Decimal(0)
+                    consumption_ipu = self._safe_cast(row.get('IPU'), Decimal) or Decimal(0)
+
+                    if key in aggregated_data:
+                        # Se já existe, soma os valores
+                        aggregated_data[key]['meter_usage'] += meter_usage
+                        aggregated_data[key]['consumption_ipu'] += consumption_ipu
+                    else:
+                        # Se não existe, cria nova entrada
+                        aggregated_data[key] = {
+                            'configuracao': config,
+                            'org_id': org_id,
+                            'meter_id': meter_id,
+                            'consumption_date': consumption_date,
+                            'data_extracao': execution_timestamp,
+                            'meter_name': self._clean_value(row.get('MeterName')),
+                            'billing_period_start_date': self._safe_cast(row.get('BillingPeriodStartDate'), datetime),
+                            'billing_period_end_date': self._safe_cast(row.get('BillingPeriodEndDate'), datetime),
+                            'meter_usage': meter_usage,
+                            'consumption_ipu': consumption_ipu,
+                            'scalar': self._clean_value(row.get('Scalar')),
+                            'metric_category': self._clean_value(row.get('MetricCategory')),
+                            'org_name': self._clean_value(row.get('OrgName')),
+                            'org_type': self._clean_value(row.get('OrgType')),
+                            'ipu_rate': self._safe_cast(row.get('IPURate'), Decimal),
+                        }
+
+            # Persistir dados agregados
+            for key, data in aggregated_data.items():
+                filters = {
+                    'configuracao': data['configuracao'],
+                    'org_id': data['org_id'],
+                    'meter_id': data['meter_id'],
+                    'consumption_date': data['consumption_date']
+                }
+                # Remove chaves de filtro dos defaults
+                defaults = data.copy()
+                del defaults['configuracao']
+                del defaults['org_id']
+                del defaults['meter_id']
+                del defaults['consumption_date']
+                
+                ConsumoSummary.objects.update_or_create(**filters, defaults=defaults)
+
+            self.stdout.write(self.style.SUCCESS(f"{log_prefix}    - Processamento do arquivo SUMMARY concluído. {len(aggregated_data)} registros consolidados."))
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
             raise
-
+    
     @transaction.atomic
     def load_project_folder_csv(self, csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoProjectFolder' com: {csv_path}")
         deletion_filter = {'configuracao': config, 'consumption_date__gte': start_date_obj, 'consumption_date__lte': end_date_obj}
 
         # Monta a query de deleção para fins de log
-        delete_query_log = f"""DELETE FROM "public"."api_consumoprojectfolder" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
-        self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
+        delete_query_log = f"""DELETE FROM "public"."api_consumoprojectfolder" WHERE "configuracao_id" = {config.id} AND CAST("consumption_date" AS DATE) >= '{start_date_obj.date().isoformat()}' AND CAST("consumption_date" AS DATE) <= '{end_date_obj.date().isoformat()}';"""
+        self.stdout.write(f"{log_prefix}    - Lógica de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoProjectFolder.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de PROJECT_FOLDER deletados.")
+        deleted_count, details = ConsumoProjectFolder.objects.filter(**deletion_filter).delete()
+        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de PROJECT_FOLDER deletados. Detalhes: {details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -282,6 +325,12 @@ class Command(BaseCommand):
                     if not lookup_params['consumption_date'] or not lookup_params['org_id']:
                         self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave: {lookup_params}"))
                         continue
+
+                    # Validate date range
+                    record_date = lookup_params['consumption_date']
+                    if not (start_date_obj.date() <= record_date.date() <= end_date_obj.date()):
+                        continue
+
                     defaults_params = {
                         'data_extracao': execution_timestamp,
                         'org_type': self._clean_value(row.get('Org Type')),
@@ -292,18 +341,18 @@ class Command(BaseCommand):
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"{log_prefix}    - Erro CRÍTICO ao processar o arquivo {csv_path}: {e}"))
             raise
-
+            
     @transaction.atomic
     def load_asset_csv(self, csv_path, config, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoAsset' com: {csv_path}")
         deletion_filter = {'configuracao': config, 'consumption_date__gte': start_date_obj, 'consumption_date__lte': end_date_obj}
 
         # Monta a query de deleção para fins de log
-        delete_query_log = f"""DELETE FROM "public"."api_consumoasset" WHERE "configuracao_id" = {config.id} AND "consumption_date" >= '{start_date_obj.isoformat()}' AND "consumption_date" <= '{end_date_obj.isoformat()}';"""
-        self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
+        delete_query_log = f"""DELETE FROM "public"."api_consumoasset" WHERE "configuracao_id" = {config.id} AND CAST("consumption_date" AS DATE) >= '{start_date_obj.date().isoformat()}' AND CAST("consumption_date" AS DATE) <= '{end_date_obj.date().isoformat()}';"""
+        self.stdout.write(f"{log_prefix}    - Lógica de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoAsset.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de ASSET deletados.")
+        deleted_count, details = ConsumoAsset.objects.filter(**deletion_filter).delete()
+        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de ASSET deletados. Detalhes: {details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -318,6 +367,12 @@ class Command(BaseCommand):
                     if not all([lookup_params['meter_id'], lookup_params['consumption_date'], lookup_params['org_id']]):
                         self.stdout.write(self.style.WARNING(f"{log_prefix}      [Linha {i+1}] Pulando linha por conter valores nulos na chave."))
                         continue
+
+                    # Validate date range
+                    record_date = lookup_params['consumption_date']
+                    if not (start_date_obj.date() <= record_date.date() <= end_date_obj.date()):
+                        continue
+
                     defaults_params = {
                         'data_extracao': execution_timestamp, 'meter_name': self._clean_value(row.get('Meter Name')), 'org_type': self._clean_value(row.get('Org Type')),
                         'environment_type': self._clean_value(row.get('Environment Type')), 'usage': self._safe_cast(row.get('Usage'), Decimal),
@@ -328,19 +383,19 @@ class Command(BaseCommand):
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Asset: {e}")
             raise
-
+            
     @transaction.atomic
     def load_cdi_job_csv(self, csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCdiJobExecucao' com: {csv_path}")
-        # Filtro de deleção corrigido para incluir o meter_id, evitando apagar dados de outros meters.
-        deletion_filter = {'configuracao': config, 'start_time__gte': start_date_obj, 'end_time__lte': end_date_obj, 'meter_id': meter_id}
+        # Filtro de deleção corrigido para usar __date, evitando problemas de timezone.
+        deletion_filter = {'configuracao': config, 'start_time__date__gte': start_date_obj.date(), 'end_time__date__lte': end_date_obj.date(), 'meter_id': meter_id}
 
         # Monta a query de deleção para fins de log
-        delete_query_log = f"""DELETE FROM "public"."api_consumocdijobexecucao" WHERE "configuracao_id" = {config.id} AND "start_time" >= '{start_date_obj.isoformat()}' AND "end_time" <= '{end_date_obj.isoformat()}' AND "meter_id" = '{meter_id}';"""
-        self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
+        delete_query_log = f"""DELETE FROM "public"."api_consumocdijobexecucao" WHERE "configuracao_id" = {config.id} AND CAST("start_time" AS DATE) >= '{start_date_obj.date().isoformat()}' AND CAST("end_time" AS DATE) <= '{end_date_obj.date().isoformat()}' AND "meter_id" = '{meter_id}';"""
+        self.stdout.write(f"{log_prefix}    - Lógica de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoCdiJobExecucao.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CDI JOB deletados.")
+        deleted_count, details = ConsumoCdiJobExecucao.objects.filter(**deletion_filter).delete()
+        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CDI JOB deletados. Detalhes: {details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -368,19 +423,18 @@ class Command(BaseCommand):
         except Exception as e:
             self.stderr.write(f"{log_prefix}    - Erro ao processar CSV de Job (CDI): {e}")
             raise
-
+            
     @transaction.atomic
     def load_cai_asset_summary_csv(self, csv_path, config, meter_id, execution_timestamp, start_date_obj, end_date_obj, log_prefix=""):
         self.stdout.write(f"{log_prefix}    - Populando tabela 'ConsumoCaiAssetSumario' com: {csv_path}")
-        # Filtro de deleção corrigido para incluir o meter_id, evitando apagar dados de outros meters.
-        deletion_filter = {'configuracao': config, 'execution_date__gte': start_date_obj, 'execution_date__lte': end_date_obj, 'meter_id': meter_id}
+        deletion_filter = {'configuracao': config, 'execution_date__date__gte': start_date_obj.date(), 'execution_date__date__lte': end_date_obj.date(), 'meter_id': meter_id}
 
         # Monta a query de deleção para fins de log
-        delete_query_log = f"""DELETE FROM "public"."api_consumocaiassetsumario" WHERE "configuracao_id" = {config.id} AND "execution_date" >= '{start_date_obj.isoformat()}' AND "execution_date" <= '{end_date_obj.isoformat()}' AND "meter_id" = '{meter_id}';"""
-        self.stdout.write(f"{log_prefix}    - Executando query de deleção: {delete_query_log}")
+        delete_query_log = f"""DELETE FROM "public"."api_consumocaiassetsumario" WHERE "configuracao_id" = {config.id} AND CAST("execution_date" AS DATE) >= '{start_date_obj.date().isoformat()}' AND CAST("execution_date" AS DATE) <= '{end_date_obj.date().isoformat()}' AND "meter_id" = '{meter_id}';"""
+        self.stdout.write(f"{log_prefix}    - Lógica de deleção: {delete_query_log}")
 
-        deleted_count, _ = ConsumoCaiAssetSumario.objects.filter(**deletion_filter).delete()
-        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CAI ASSET SUMMARY deletados.")
+        deleted_count, details = ConsumoCaiAssetSumario.objects.filter(**deletion_filter).delete()
+        self.stdout.write(f"{log_prefix}    - {deleted_count} registros antigos de CAI ASSET SUMMARY deletados. Detalhes: {details}")
         try:
             with open(csv_path, mode='r', encoding='utf-8') as infile:
                 reader = csv.DictReader(infile)
@@ -502,11 +556,23 @@ class Command(BaseCommand):
             # Os filtros do Django devem usar objetos aware no timezone da aplicação (São Paulo)
             start_date_for_filter = period_start.replace(hour=0, minute=0, second=0, microsecond=0)
             end_date_for_filter = period_end.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+            if timezone.is_naive(start_date_for_filter):
+                start_date_for_filter = timezone.make_aware(start_date_for_filter)
+            if timezone.is_naive(end_date_for_filter):
+                end_date_for_filter = timezone.make_aware(end_date_for_filter)
+
+            # Fechar conexões antigas/inutilizáveis antes de iniciar threads longas
+            connection.close()
+
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"{log_prefix}_sub") as sub_executor:
                 future_asset_chain = sub_executor.submit(self.run_summary_asset_jobs_flow, api_client, start_date_str, end_date_str, config, file_paths, start_date_for_filter, end_date_for_filter, log_prefix)
                 future_project = sub_executor.submit(self.run_export_flow, api_client, start_date_str, end_date_str, config, file_paths, start_date_for_filter, end_date_for_filter, job_type="PROJECT_FOLDER", log_prefix=log_prefix)
                 future_asset_chain.result()
                 future_project.result()
+            
+            # Fechar conexões novamente após o trabalho das threads, para garantir que o próximo uso (save) pegue uma nova.
+            connection.close()
             return True
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"{log_prefix} Falha crítica ao executar extração para o período de {period_start.date()} a {period_end.date()}: {e}"))
@@ -525,15 +591,13 @@ class Command(BaseCommand):
             if not api_client.login(): return
             ExtracaoLog.objects.create(configuracao=config, etapa="LOGIN", status="SUCCESS")
             
-            # Toda a lógica de datas será baseada no fuso horário de São Paulo
             now_in_sao_paulo = timezone.now().astimezone(self.SAO_PAULO_TZ)
 
             if config.ultima_extracao_enddate:
-                # Começa do início do dia da última extração (em horário de São Paulo)
-                start_date_naive = config.ultima_extracao_enddate
-                overall_start_date = timezone.make_aware(datetime.combine(start_date_naive, datetime.min.time()), self.SAO_PAULO_TZ)
+                # CORREÇÃO 1: Lê a data/hora (que já tem timezone), extrai a data e a torna 'aware' novamente para o início do dia.
+                start_date_sp = config.ultima_extracao_enddate.astimezone(self.SAO_PAULO_TZ).date()
+                overall_start_date = timezone.make_aware(datetime.combine(start_date_sp, datetime.min.time()), self.SAO_PAULO_TZ)
             else:
-                # Para a primeira execução, busca os últimos 90 dias
                 overall_start_date = now_in_sao_paulo - timedelta(days=90)
             overall_end_date = now_in_sao_paulo
 
@@ -548,7 +612,6 @@ class Command(BaseCommand):
             if total_days > 30:
                 self.stdout.write(f"{log_prefix} Período maior que 30 dias. A extração será dividida em lotes.")
                 current_start = overall_start_date
-                # Corrigido para '<=' para garantir que o último dia do intervalo seja processado.
                 while current_start.date() <= overall_end_date.date():
                     current_end = current_start + timedelta(days=30)
                     if current_end > overall_end_date:
@@ -567,12 +630,11 @@ class Command(BaseCommand):
                     all_runs_successful = False
 
             if all_runs_successful:
-                # Salva a data (sem hora) do final da extração bem-sucedida (no fuso de São Paulo)
-                config.ultima_extracao_enddate = overall_end_date.date()
+                # CORREÇÃO 2: Salva o objeto datetime completo (com timezone), não apenas a data.
+                config.ultima_extracao_enddate = overall_end_date
                 config.save()
                 self.stdout.write(self.style.SUCCESS(f"{log_prefix} Extração concluída. Marcador 'ultima_extracao_enddate' atualizado para {overall_end_date.date()}"))
                 
-                # Após a carga bem-sucedida, atualiza os ciclos de faturamento
                 self._atualizar_ciclos_faturamento(config, log_prefix)
             else:
                 self.stderr.write(self.style.ERROR(f"{log_prefix} Extração falhou. O marcador 'ultima_extracao_enddate' não será atualizado."))
@@ -584,7 +646,7 @@ class Command(BaseCommand):
             duration = timedelta(seconds=end_time - start_time)
             self.stdout.write(self.style.SUCCESS(f"{log_prefix} Processo concluído em {duration}"))
             connection.close()
-
+            
     def _atualizar_ciclos_faturamento(self, config, log_prefix=""):
         self.stdout.write(f"{log_prefix} 6. Atualizando ciclos de faturamento...")
         try:
@@ -618,14 +680,54 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"{log_prefix} Erro ao atualizar ciclos de faturamento: {e}"))
             ExtracaoLog.objects.create(configuracao=config, etapa="CICLO_FATURAMENTO", status="FAILED", mensagem_erro=str(e))
 
+    def add_arguments(self, parser):
+        parser.add_argument('--cliente_id', type=int, help='ID do cliente para processar especificamente')
+        parser.add_argument('--configuracao_id', type=int, help='ID da configuração para processar especificamente')
+        parser.add_argument('--start-date', type=str, help='Data inicial (YYYY-MM-DD) para extração manual')
+        parser.add_argument('--end-date', type=str, help='Data final (YYYY-MM-DD) para extração manual')
+
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS("==== INICIANDO ROTINA DE EXTRAÇÃO DE CONSUMO IICS ===="))
-        configs_para_processar = list(ConfiguracaoIDMC.objects.filter(ativo=True))
+        
+        configs_para_processar = ConfiguracaoIDMC.objects.filter(ativo=True)
+        
+        cliente_id = options.get('cliente_id')
+        configuracao_id = options.get('configuracao_id')
+        start_date_str = options.get('start_date')
+        end_date_str = options.get('end_date')
+
+        custom_start_date = None
+        custom_end_date = None
+
+        if start_date_str and end_date_str:
+            try:
+                custom_start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                custom_end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                if custom_start_date > custom_end_date:
+                    raise ValueError("Start date must be before end date")
+                self.stdout.write(self.style.WARNING(f"MODO MANUAL ATIVADO: Forçando extração de {custom_start_date} até {custom_end_date}"))
+            except ValueError as e:
+                self.stderr.write(self.style.ERROR(f"Erro nas datas fornecidas: {e}"))
+                return
+
+        if cliente_id:
+            self.stdout.write(f"Filtrando pelo Cliente ID: {cliente_id}")
+            configs_para_processar = configs_para_processar.filter(cliente_id=cliente_id)
+        
+        if configuracao_id:
+            self.stdout.write(f"Filtrando pela Configuração ID: {configuracao_id}")
+            configs_para_processar = configs_para_processar.filter(id=configuracao_id)
+
+        configs_para_processar = list(configs_para_processar)
         if not configs_para_processar:
             self.stdout.write(self.style.WARNING("Nenhuma configuração ativa encontrada no banco de dados. Saindo."))
             return
         MAX_WORKERS = 5
         self.stdout.write(f"Encontradas {len(configs_para_processar)} configurações para processar. Iniciando com até {MAX_WORKERS} workers paralelos.")
+        
+        def process_wrapper(config):
+            self.processar_configuracao(config, custom_start_date, custom_end_date)
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            executor.map(self.processar_configuracao, configs_para_processar)
+            executor.map(process_wrapper, configs_para_processar)
         self.stdout.write(self.style.SUCCESS("\n==== ROTINA DE EXTRAÇÃO FINALIZADA ===="))
